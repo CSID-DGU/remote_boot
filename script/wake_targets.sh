@@ -2,13 +2,17 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
+
 declare -ar FARM_TARGETS=(FARM1 FARM2 FARM6 FARM7 FARM8 FARM9)
 declare -ar LAB_TARGETS=(LAB1 LAB2 LAB3 LAB4 LAB5 LAB6 LAB7 LAB8 LAB9)
 declare -ar ALL_TARGETS=("${FARM_TARGETS[@]}" "${LAB_TARGETS[@]}")
 
 show_help() {
   cat <<'EOF'
-Usage: wake_targets.sh [--list-targets] TARGET [TARGET ...]
+Usage: wake_targets.sh [--config PATH] [--list-targets] TARGET [TARGET ...]
 
 Targets:
   FARM1 FARM2 FARM6 FARM7 FARM8 FARM9
@@ -27,6 +31,7 @@ Broadcast IP defaults:
 Environment overrides:
   REMOTE_BOOT_FARM_BROADCAST_IP
   REMOTE_BOOT_LAB_BROADCAST_IP
+  REMOTE_BOOT_MAC_<TARGET>
 EOF
 }
 
@@ -59,6 +64,15 @@ require_command() {
   fi
 }
 
+load_config() {
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${CONFIG_FILE}"
+    set +a
+  fi
+}
+
 send_magic_packet() {
   local name="$1"
   local mac="$2"
@@ -86,27 +100,15 @@ wlookup_error() {
 
 lookup_mac() {
   local normalized_target="$1"
+  local mac_var="REMOTE_BOOT_MAC_${normalized_target}"
+  local mac_value="${!mac_var:-}"
 
-  case "${normalized_target}" in
-    FARM1) printf '%s\n' "18:C0:4D:4C:B3:13" ;;
-    FARM2) printf '%s\n' "18:C0:4D:4C:B3:D5" ;;
-    FARM6) printf '%s\n' "3C:EC:EF:9E:03:FF" ;;
-    FARM7) printf '%s\n' "3C:EC:EF:92:2E:29" ;;
-    FARM8) printf '%s\n' "A0:36:BC:C8:44:6E" ;;
-    FARM9) printf '%s\n' "74:56:3C:4C:93:7C" ;;
-    LAB1) printf '%s\n' "50:EB:F6:51:E6:9C" ;;
-    LAB2) printf '%s\n' "A0:42:3F:3D:05:EB" ;;
-    LAB3) printf '%s\n' "A0:42:3F:3D:07:13" ;;
-    LAB4) printf '%s\n' "A0:42:3F:3A:4D:B9" ;;
-    LAB5) printf '%s\n' "7C:C2:55:6B:45:98" ;;
-    LAB6) printf '%s\n' "A0:42:3F:3D:06:D3" ;;
-    LAB7) printf '%s\n' "B4:2E:99:A2:30:FE" ;;
-    LAB8) printf '%s\n' "A0:42:3F:3D:99:23" ;;
-    LAB9) printf '%s\n' "74:56:3C:B4:3B:C4" ;;
-    *)
-      wlookup_error "${normalized_target}"
-      ;;
-  esac
+  if [[ -z "${mac_value}" ]]; then
+    echo "Error: MAC address is not configured for ${normalized_target} (${mac_var})." >&2
+    exit 1
+  fi
+
+  printf '%s\n' "${mac_value}"
 }
 
 lookup_broadcast_ip() {
@@ -145,22 +147,37 @@ wake_target() {
 }
 
 main() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --config)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --config requires a value." >&2
+          exit 1
+        fi
+        CONFIG_FILE="$2"
+        shift 2
+        ;;
+      --list-targets)
+        list_targets
+        exit 0
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
   if [[ $# -eq 0 ]]; then
     show_help
     exit 1
   fi
 
-  if [[ "$1" == "--list-targets" ]]; then
-    list_targets
-    exit 0
-  fi
-
-  if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    show_help
-    exit 0
-  fi
-
   require_command "wakeonlan" "Install it with: sudo apt install wakeonlan"
+  load_config
   REMOTE_BOOT_FARM_BROADCAST_IP="${REMOTE_BOOT_FARM_BROADCAST_IP:-192.168.2.255}"
   REMOTE_BOOT_LAB_BROADCAST_IP="${REMOTE_BOOT_LAB_BROADCAST_IP:-192.168.1.255}"
 

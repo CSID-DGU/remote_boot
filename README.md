@@ -24,14 +24,15 @@ Wake-on-LAN targets can be sent automatically whenever this desktop boots.
 cp config/remote_boot.example.env config/remote_boot.local.env
 ```
 
-2. Review `config/remote_boot.local.env`
-3. Install the boot service
+2. Fill in server-specific values in `config/remote_boot.local.env`
+3. Review `config/remote_boot.local.env`
+4. Install the boot service
 
 ```bash
 ./script/install_remote_boot_service.sh
 ```
 
-4. Reboot, or run once manually
+5. Reboot, or run once manually
 
 ```bash
 sudo systemctl start remote-boot.service
@@ -75,11 +76,12 @@ Recommended manual integration test:
 ## Git
 
 - `config/remote_boot.local.env` is ignored by `.gitignore`
-- commit `config/remote_boot.example.env` and keep real server-specific values only in `config/remote_boot.local.env`
+- commit `config/remote_boot.example.env` and keep real server-specific values, including MAC addresses, only in `config/remote_boot.local.env`
 
 ## Notes
 
 - `wakeonlan` must be installed on this desktop.
+- `wake_targets.sh` reads MAC addresses from `REMOTE_BOOT_MAC_<TARGET>` variables in `config/remote_boot.local.env`.
 - `LAB*` targets use `192.168.1.255`, and `FARM*` targets use `192.168.2.255` by default.
 - remote scripts can use `REMOTE_BOOT_ANSIBLE_INVENTORY`, or fall back to your existing `ansible.cfg` default inventory.
 - host mount checks expect `100.100.100.100:/294t/dcloud/share` for LAB and `100.100.100.120:/volume1/share` for FARM.
