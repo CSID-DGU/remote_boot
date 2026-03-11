@@ -87,5 +87,6 @@ Recommended manual integration test:
 - remote scripts can use `REMOTE_BOOT_ANSIBLE_INVENTORY`, or fall back to your existing `ansible.cfg` default inventory.
 - host mount checks expect `100.100.100.100:/294t/dcloud/share` for LAB and `100.100.100.120:/volume1/share` for FARM.
 - boot health checks create a temporary GPU test container directly via Docker and remove it without writing to the DB.
+- test container share mounts can use `REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE="/home/tako%s/share/user-share/"`; `%s` is replaced with the server number, so `FARM1` and `LAB1` both use `/home/tako1/share/user-share/`.
 - container restart uses `docker ps -aq`; if a server has no containers, it logs and continues.
 - If the network is not ready at boot, increase `REMOTE_BOOT_PRE_DELAY_SECONDS`.

@@ -96,6 +96,7 @@ REMOTE_BOOT_TEST_UID="${REMOTE_BOOT_TEST_UID:-10000}"
 REMOTE_BOOT_TEST_GID="${REMOTE_BOOT_TEST_GID:-10000}"
 REMOTE_BOOT_TEST_PASSWORD="${REMOTE_BOOT_TEST_PASSWORD:-ailab2260}"
 REMOTE_BOOT_TEST_MEMORY="${REMOTE_BOOT_TEST_MEMORY:-192g}"
+REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE="${REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE:-}"
 REMOTE_BOOT_TEST_SHARE_SOURCE_BASE="${REMOTE_BOOT_TEST_SHARE_SOURCE_BASE:-/home/tako}"
 REMOTE_BOOT_TEST_SHARE_SOURCE_SUFFIX="${REMOTE_BOOT_TEST_SHARE_SOURCE_SUFFIX:-/share/user-share/}"
 REMOTE_BOOT_TEST_SHARE_TARGET="${REMOTE_BOOT_TEST_SHARE_TARGET:-/home/}"
@@ -121,7 +122,11 @@ container_name="${CONTAINER_NAME_OVERRIDE:-$(printf '%s_%s' "${REMOTE_BOOT_TEST_
 validate_simple_value "container name" "${container_name}" '^[A-Za-z0-9_.-]+$'
 
 image_ref="${REMOTE_BOOT_TEST_IMAGE_REPOSITORY}/${REMOTE_BOOT_TEST_IMAGE}:${REMOTE_BOOT_TEST_VERSION}"
-share_source="${REMOTE_BOOT_TEST_SHARE_SOURCE_BASE}${server_number}${REMOTE_BOOT_TEST_SHARE_SOURCE_SUFFIX}"
+if [[ -n "${REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE}" ]]; then
+  share_source="$(printf '%s' "${REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE}" | sed "s/%s/${server_number}/g")"
+else
+  share_source="${REMOTE_BOOT_TEST_SHARE_SOURCE_BASE}${server_number}${REMOTE_BOOT_TEST_SHARE_SOURCE_SUFFIX}"
+fi
 
 run_remote_shell "${target_host}" "docker rm -f '${container_name}' >/dev/null 2>&1 || true" >/dev/null
 run_remote_shell "${target_host}" "docker pull '${image_ref}'" >/dev/null
