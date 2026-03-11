@@ -11,10 +11,6 @@ TARGET_SCOPE="priority"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
 
-declare -ar FARM_TARGETS=(FARM1 FARM2 FARM6 FARM7 FARM8 FARM9)
-declare -ar LAB_TARGETS=(LAB1 LAB2 LAB3 LAB4 LAB5 LAB6 LAB7 LAB8 LAB9 LAB10)
-declare -ar ALL_TARGETS=("${FARM_TARGETS[@]}" "${LAB_TARGETS[@]}")
-
 show_help() {
   cat <<EOF
 Usage: $0 [options]
@@ -27,76 +23,6 @@ Options:
 
 This script does not send Wake-on-LAN packets unless --full-flow is used.
 EOF
-}
-
-parse_target_string() {
-  local raw_targets="$1"
-  local normalized="${raw_targets//,/ }"
-
-  read -r -a PARSED_TARGETS <<< "${normalized}"
-}
-
-normalize_target() {
-  local raw_target="$1"
-
-  case "${raw_target}" in
-    all | all-farm | all-lab)
-      printf '%s\n' "${raw_target}"
-      ;;
-    *)
-      printf '%s\n' "$(printf '%s' "${raw_target}" | tr '[:lower:]' '[:upper:]')"
-      ;;
-  esac
-}
-
-append_unique_target() {
-  local target="$1"
-  local existing
-
-  for existing in "${EXPANDED_TARGETS[@]:-}"; do
-    if [[ "${existing}" == "${target}" ]]; then
-      return 0
-    fi
-  done
-
-  EXPANDED_TARGETS+=("${target}")
-}
-
-expand_target_token() {
-  local normalized_target
-  local target
-
-  normalized_target="$(normalize_target "$1")"
-
-  case "${normalized_target}" in
-    all-farm)
-      for target in "${FARM_TARGETS[@]}"; do
-        append_unique_target "${target}"
-      done
-      ;;
-    all-lab)
-      for target in "${LAB_TARGETS[@]}"; do
-        append_unique_target "${target}"
-      done
-      ;;
-    all)
-      for target in "${ALL_TARGETS[@]}"; do
-        append_unique_target "${target}"
-      done
-      ;;
-    *)
-      append_unique_target "${normalized_target}"
-      ;;
-  esac
-}
-
-expand_target_list() {
-  EXPANDED_TARGETS=()
-
-  local token
-  for token in "$@"; do
-    expand_target_token "${token}"
-  done
 }
 
 while [[ $# -gt 0 ]]; do
@@ -143,6 +69,7 @@ fi
 load_remote_boot_runtime
 require_ansible_cli || exit 1
 require_ansible_inventory || exit 1
+load_target_groups
 
 REMOTE_BOOT_TARGETS="${REMOTE_BOOT_TARGETS:-all}"
 REMOTE_BOOT_PRIORITY_TARGETS="${REMOTE_BOOT_PRIORITY_TARGETS:-FARM1 LAB1}"

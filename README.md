@@ -77,6 +77,7 @@ Recommended manual integration test:
 
 - `config/remote_boot.local.env` is ignored by `.gitignore`
 - commit `config/remote_boot.example.env` and keep real server-specific values, including MAC addresses, only in `config/remote_boot.local.env`
+- when a server is added, update `REMOTE_BOOT_FARM_TARGETS` or `REMOTE_BOOT_LAB_TARGETS` plus the matching `REMOTE_BOOT_MAC_<TARGET>` value in `config/remote_boot.local.env`
 
 ## Notes
 

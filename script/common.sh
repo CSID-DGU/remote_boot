@@ -18,6 +18,131 @@ load_remote_boot_runtime() {
   ANSIBLE_INVENTORY="${REMOTE_BOOT_ANSIBLE_INVENTORY}"
 }
 
+parse_target_string() {
+  local raw_targets="$1"
+  local normalized="${raw_targets//,/ }"
+
+  read -r -a PARSED_TARGETS <<< "${normalized}"
+}
+
+normalize_target() {
+  local raw_target="$1"
+
+  case "${raw_target}" in
+    all | all-farm | all-lab)
+      printf '%s\n' "${raw_target}"
+      ;;
+    *)
+      printf '%s\n' "$(printf '%s' "${raw_target}" | tr '[:lower:]' '[:upper:]')"
+      ;;
+  esac
+}
+
+load_target_groups() {
+  REMOTE_BOOT_FARM_TARGETS="${REMOTE_BOOT_FARM_TARGETS:-FARM1 FARM2 FARM6 FARM7 FARM8 FARM9}"
+  REMOTE_BOOT_LAB_TARGETS="${REMOTE_BOOT_LAB_TARGETS:-LAB1 LAB2 LAB3 LAB4 LAB5 LAB6 LAB7 LAB8 LAB9}"
+
+  parse_target_string "${REMOTE_BOOT_FARM_TARGETS}"
+  FARM_TARGETS=("${PARSED_TARGETS[@]}")
+
+  parse_target_string "${REMOTE_BOOT_LAB_TARGETS}"
+  LAB_TARGETS=("${PARSED_TARGETS[@]}")
+
+  ALL_TARGETS=("${FARM_TARGETS[@]}" "${LAB_TARGETS[@]}")
+}
+
+append_unique_target() {
+  local target="$1"
+  local existing
+
+  for existing in "${EXPANDED_TARGETS[@]:-}"; do
+    if [[ "${existing}" == "${target}" ]]; then
+      return 0
+    fi
+  done
+
+  EXPANDED_TARGETS+=("${target}")
+}
+
+is_valid_concrete_target() {
+  local target="$1"
+  local known_target
+
+  for known_target in "${ALL_TARGETS[@]:-}"; do
+    if [[ "${known_target}" == "${target}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+expand_target_token() {
+  local normalized_target
+  local target
+
+  normalized_target="$(normalize_target "$1")"
+
+  case "${normalized_target}" in
+    all-farm)
+      for target in "${FARM_TARGETS[@]:-}"; do
+        append_unique_target "${target}"
+      done
+      ;;
+    all-lab)
+      for target in "${LAB_TARGETS[@]:-}"; do
+        append_unique_target "${target}"
+      done
+      ;;
+    all)
+      for target in "${ALL_TARGETS[@]:-}"; do
+        append_unique_target "${target}"
+      done
+      ;;
+    *)
+      if ! is_valid_concrete_target "${normalized_target}"; then
+        echo "Error: unknown target '${normalized_target}'." >&2
+        return 1
+      fi
+      append_unique_target "${normalized_target}"
+      ;;
+  esac
+}
+
+expand_target_list() {
+  EXPANDED_TARGETS=()
+
+  local token
+  for token in "$@"; do
+    expand_target_token "${token}" || return 1
+  done
+}
+
+target_in_list() {
+  local needle="$1"
+  shift
+
+  local target
+  for target in "$@"; do
+    if [[ "${target}" == "${needle}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+is_truthy() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 normalize_domain_name() {
   local raw_domain="$1"
   local normalized

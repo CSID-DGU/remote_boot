@@ -6,9 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
 
-declare -ar FARM_TARGETS=(FARM1 FARM2 FARM6 FARM7 FARM8 FARM9)
-declare -ar LAB_TARGETS=(LAB1 LAB2 LAB3 LAB4 LAB5 LAB6 LAB7 LAB8 LAB9)
-declare -ar ALL_TARGETS=("${FARM_TARGETS[@]}" "${LAB_TARGETS[@]}")
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/common.sh"
 
 show_help() {
   cat <<'EOF'
@@ -36,32 +35,9 @@ EOF
 }
 
 list_targets() {
-  printf '%s\n' "${FARM_TARGETS[@]}"
-  printf '%s\n' "${LAB_TARGETS[@]}"
+  printf '%s\n' "${FARM_TARGETS[@]:-}"
+  printf '%s\n' "${LAB_TARGETS[@]:-}"
   printf '%s\n' all-farm all-lab all
-}
-
-normalize_target() {
-  local raw_target="$1"
-
-  case "${raw_target}" in
-    all | all-farm | all-lab)
-      printf '%s\n' "${raw_target}"
-      ;;
-    *)
-      printf '%s\n' "$(printf '%s' "${raw_target}" | tr '[:lower:]' '[:upper:]')"
-      ;;
-  esac
-}
-
-require_command() {
-  local cmd="$1"
-  local hint="$2"
-
-  if ! command -v "${cmd}" >/dev/null 2>&1; then
-    echo "Error: '${cmd}' command not found. ${hint}" >&2
-    exit 1
-  fi
 }
 
 load_config() {
@@ -147,6 +123,8 @@ wake_target() {
 }
 
 main() {
+  local list_only=false
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --config)
@@ -158,8 +136,16 @@ main() {
         shift 2
         ;;
       --list-targets)
-        list_targets
-        exit 0
+        list_only=true
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "Unknown option: $1" >&2
+        exit 1
         ;;
       -h|--help)
         show_help
@@ -171,15 +157,21 @@ main() {
     esac
   done
 
+  require_command "wakeonlan" "Install it with: sudo apt install wakeonlan"
+  load_config
+  load_target_groups
+  REMOTE_BOOT_FARM_BROADCAST_IP="${REMOTE_BOOT_FARM_BROADCAST_IP:-192.168.2.255}"
+  REMOTE_BOOT_LAB_BROADCAST_IP="${REMOTE_BOOT_LAB_BROADCAST_IP:-192.168.1.255}"
+
+  if [[ "${list_only}" == "true" ]]; then
+    list_targets
+    exit 0
+  fi
+
   if [[ $# -eq 0 ]]; then
     show_help
     exit 1
   fi
-
-  require_command "wakeonlan" "Install it with: sudo apt install wakeonlan"
-  load_config
-  REMOTE_BOOT_FARM_BROADCAST_IP="${REMOTE_BOOT_FARM_BROADCAST_IP:-192.168.2.255}"
-  REMOTE_BOOT_LAB_BROADCAST_IP="${REMOTE_BOOT_LAB_BROADCAST_IP:-192.168.1.255}"
 
   local raw_target normalized_target
   for raw_target in "$@"; do

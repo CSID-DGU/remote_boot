@@ -7,11 +7,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
 WAKE_SCRIPT="${SCRIPT_DIR}/wake_targets.sh"
 RESTART_SCRIPT="${REMOTE_BOOT_RESTART_SCRIPT:-${SCRIPT_DIR}/restart_all_remote_containers.sh}"
-declare -ar FARM_TARGETS=(FARM1 FARM2 FARM6 FARM7 FARM8 FARM9)
-declare -ar LAB_TARGETS=(LAB1 LAB2 LAB3 LAB4 LAB5 LAB6 LAB7 LAB8 LAB9)
-declare -ar ALL_TARGETS=("${FARM_TARGETS[@]}" "${LAB_TARGETS[@]}")
 TARGETS_OVERRIDE=""
 PRE_DELAY_OVERRIDE=""
+
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/common.sh"
 
 show_help() {
   cat <<EOF
@@ -32,118 +32,6 @@ Boot sequence:
   4. Wake remaining selected targets
   5. Restart docker containers on all selected servers
 EOF
-}
-
-parse_target_string() {
-  local raw_targets="$1"
-  local normalized="${raw_targets//,/ }"
-
-  read -r -a PARSED_TARGETS <<< "${normalized}"
-}
-
-normalize_target() {
-  local raw_target="$1"
-
-  case "${raw_target}" in
-    all | all-farm | all-lab)
-      printf '%s\n' "${raw_target}"
-      ;;
-    *)
-      printf '%s\n' "$(printf '%s' "${raw_target}" | tr '[:lower:]' '[:upper:]')"
-      ;;
-  esac
-}
-
-is_valid_concrete_target() {
-  local target="$1"
-  local known_target
-
-  for known_target in "${ALL_TARGETS[@]}"; do
-    if [[ "${known_target}" == "${target}" ]]; then
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-append_unique_target() {
-  local target="$1"
-  local existing
-
-  for existing in "${EXPANDED_TARGETS[@]:-}"; do
-    if [[ "${existing}" == "${target}" ]]; then
-      return 0
-    fi
-  done
-
-  EXPANDED_TARGETS+=("${target}")
-}
-
-expand_target_token() {
-  local normalized_target
-  local target
-
-  normalized_target="$(normalize_target "$1")"
-
-  case "${normalized_target}" in
-    all-farm)
-      for target in "${FARM_TARGETS[@]}"; do
-        append_unique_target "${target}"
-      done
-      ;;
-    all-lab)
-      for target in "${LAB_TARGETS[@]}"; do
-        append_unique_target "${target}"
-      done
-      ;;
-    all)
-      for target in "${ALL_TARGETS[@]}"; do
-        append_unique_target "${target}"
-      done
-      ;;
-    *)
-      if ! is_valid_concrete_target "${normalized_target}"; then
-        echo "Error: unknown target '${normalized_target}'." >&2
-        exit 1
-      fi
-      append_unique_target "${normalized_target}"
-      ;;
-  esac
-}
-
-expand_target_list() {
-  EXPANDED_TARGETS=()
-
-  local token
-  for token in "$@"; do
-    expand_target_token "${token}"
-  done
-}
-
-target_in_list() {
-  local needle="$1"
-  shift
-
-  local target
-  for target in "$@"; do
-    if [[ "${target}" == "${needle}" ]]; then
-      return 0
-    fi
-  done
-
-  return 1
-}
-
-is_truthy() {
-  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-    1|true|yes|on)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
 }
 
 while [[ $# -gt 0 ]]; do
@@ -191,6 +79,8 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   source "${CONFIG_FILE}"
   set +a
 fi
+
+load_target_groups
 
 REMOTE_BOOT_TARGETS="${REMOTE_BOOT_TARGETS:-all}"
 REMOTE_BOOT_PRE_DELAY_SECONDS="${REMOTE_BOOT_PRE_DELAY_SECONDS:-0}"
