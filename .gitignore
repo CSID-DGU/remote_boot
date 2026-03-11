@@ -1,0 +1,10 @@
+# Local runtime configuration
+config/remote_boot.local.env
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+
+# Local logs
+*.log
