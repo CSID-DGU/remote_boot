@@ -151,7 +151,7 @@ case "${REMOTE_BOOT_TEST_DOCKER_RUNTIME}" in
   auto)
     if dry_run_enabled; then
       runtime_argument_preview="<auto-detect --runtime=nvidia when remote docker advertises it>"
-    elif run_remote_shell "${target_host}" "docker info --format '{{json .Runtimes}}' | grep -F '\"nvidia\"' >/dev/null"; then
+    elif run_remote_shell "${target_host}" "docker info --format '{% raw %}{{json .Runtimes}}{% endraw %}' | grep -F '\"nvidia\"' >/dev/null"; then
       runtime_argument=" --runtime=nvidia"
     fi
     ;;

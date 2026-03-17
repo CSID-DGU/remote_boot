@@ -241,6 +241,8 @@ if [[ ${#remaining_targets[@]} -gt 0 ]]; then
     notify_failure_stub "stage=remaining_wake reason=wake_failed targets=\"${remaining_targets[*]}\""
     exit 1
   fi
+elif is_truthy "${REMOTE_BOOT_ENABLE_GATE}" && [[ ${#priority_targets[@]} -gt 0 ]]; then
+  log_event "GATE" "stage=skipped reason=no_remaining_targets targets=\"${priority_targets[*]}\""
 fi
 
 if is_truthy "${REMOTE_BOOT_ENABLE_CONTAINER_RESTART}" && [[ ${#selected_targets[@]} -gt 0 ]]; then

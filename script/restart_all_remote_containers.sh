@@ -115,7 +115,7 @@ dry_run_restart_plan() {
   log_dry_run "server=${server_id} action=remote_command host=${host_alias} command=\"docker restart \$(docker ps -aq)\""
   log_dry_run "server=${server_id} action=recovery_plan host=${host_alias} recovery=\"sudo -n systemctl restart docker || sudo -n service docker restart\""
 
-  inventory_output="$(run_remote_shell_capture "${host_alias}" "docker ps -a --format '{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}'")" || return 1
+  inventory_output="$(run_remote_shell_capture "${host_alias}" "docker ps -a --format '{% raw %}{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}{% endraw %}'")" || return 1
   container_lines="$(printf '%s\n' "${inventory_output}" | sed '1d')"
 
   if [[ -z "$(printf '%s' "${container_lines}" | tr -d '[:space:]')" ]]; then
@@ -187,8 +187,8 @@ if ! docker restart \$container_ids; then
 fi
 
 for container_id in \$container_ids; do
-  container_name=\$(docker inspect --format '{{.Name}}' "\$container_id" 2>/dev/null | sed 's#^/##')
-  container_image=\$(docker inspect --format '{{.Config.Image}}' "\$container_id" 2>/dev/null)
+  container_name=\$(docker inspect --format '{% raw %}{{.Name}}{% endraw %}' "\$container_id" 2>/dev/null | sed 's#^/##')
+  container_image=\$(docker inspect --format '{% raw %}{{.Config.Image}}{% endraw %}' "\$container_id" 2>/dev/null)
   if [ -z "\$container_name" ]; then
     container_name="\$container_id"
   fi

@@ -105,7 +105,7 @@ for host_alias in "${selected_hosts[@]}"; do
 done
 log_event "SMOKE" "stage=host_docker"
 for host_alias in "${selected_hosts[@]}"; do
-  run_ansible "${host_alias}" -m shell -a "docker version --format '{{.Server.Version}}'"
+  run_ansible "${host_alias}" -m shell -a "docker version --format '{% raw %}{{.Server.Version}}{% endraw %}'"
 done
 log_event "SMOKE" "stage=host_gpu"
 for host_alias in "${selected_hosts[@]}"; do
