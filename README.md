@@ -14,6 +14,7 @@ Wake-on-LAN targets can be sent automatically whenever this desktop boots.
 - `script/restart_all_remote_containers.sh`: run `docker restart $(docker ps -aq)` on selected servers with retry
 - `script/integration_smoke_test.sh`: manual ansible/docker/GPU smoke test before enabling boot automation
 - `script/dry_run_remote_boot.sh`: dry-run wrapper for wake, health, container, and full-flow simulations
+- `script/test_slack_notification.sh`: send a real Slack test message using local config
 - `script/install_remote_boot_service.sh`: installs and enables the systemd boot service
 - `config/remote_boot.local.env`: local defaults used at boot time
 
@@ -39,6 +40,23 @@ cp config/remote_boot.example.env config/remote_boot.local.env
 sudo systemctl start remote-boot.service
 ```
 
+Service registration and management:
+
+```bash
+# Install and enable at boot
+./script/install_remote_boot_service.sh
+
+# Install and start immediately
+./script/install_remote_boot_service.sh --start-now
+
+# Check status
+systemctl status remote-boot.service
+
+# Read logs
+journalctl -u remote-boot.service -b
+tail -f /var/log/remote-boot.log
+```
+
 ## Manual usage
 
 List available targets:
@@ -60,7 +78,7 @@ Boot orchestration with staged wake-up:
 - the gate retries for up to `REMOTE_BOOT_GATE_TIMEOUT_SECONDS=360`
 - once the gate passes, the remaining selected targets are sent
 - finally, if `REMOTE_BOOT_ENABLE_CONTAINER_RESTART=true`, all selected servers run a full docker container restart, then each restarted container is checked for `ssh` and `nvidia-smi`
-- when a recovery path still cannot fix the issue, a Slack placeholder notifier writes a stub alert log instead of sending a real message
+- when a recovery path still cannot fix the issue, the system tries to send a Slack webhook alert and falls back to a stub alert log if Slack is disabled or delivery fails
 
 Standalone test container commands:
 
@@ -99,6 +117,67 @@ Dry-run behavior:
 - `containers` does not restart anything, but it does read the current remote container inventory so it can show which containers would receive SSH checks and which ones would receive GPU checks.
 - For actual verification after a host is already up, use `./script/check_server_boot_health.sh --server-id FARM1` and `./script/restart_all_remote_containers.sh FARM1`.
 
+## Config guide
+
+`config/remote_boot.local.env` is grouped into these sections:
+
+- Remote boot target groups:
+  `REMOTE_BOOT_FARM_TARGETS`, `REMOTE_BOOT_LAB_TARGETS`, `REMOTE_BOOT_TARGETS`
+- Boot order and gate behavior:
+  `REMOTE_BOOT_PRIORITY_TARGETS`, `REMOTE_BOOT_ENABLE_GATE`, `REMOTE_BOOT_GATE_*`, `REMOTE_BOOT_SECONDARY_DELAY_SECONDS`
+- Post-boot container restart flow:
+  `REMOTE_BOOT_ENABLE_CONTAINER_RESTART`, `REMOTE_BOOT_CONTAINER_RESTART_*`, `REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_*`
+- Ansible / network:
+  `REMOTE_BOOT_ANSIBLE_INVENTORY`, broadcast IPs
+- Wake-on-LAN MAC addresses:
+  `REMOTE_BOOT_MAC_<TARGET>`
+- Host health-check requirements:
+  required NFS mounts, `REMOTE_BOOT_HOST_SHARE_MOUNT_TEMPLATE`
+- Temporary test container for health checks:
+  `REMOTE_BOOT_TEST_*`
+- Logging / alerts:
+  `REMOTE_BOOT_ENABLE_HEALTH_LOGGING`, log paths, rotate count
+
+Most commonly changed options:
+
+- `REMOTE_BOOT_TARGETS`:
+  default targets to boot
+- `REMOTE_BOOT_PRIORITY_TARGETS`:
+  first servers to wake and verify
+- `REMOTE_BOOT_ENABLE_GATE`:
+  whether the remaining servers wait for priority health checks
+- `REMOTE_BOOT_ENABLE_CONTAINER_RESTART`:
+  whether all containers are restarted after boot
+- `REMOTE_BOOT_TEST_IMAGE_REPOSITORY`, `REMOTE_BOOT_TEST_IMAGE`, `REMOTE_BOOT_TEST_VERSION`:
+  the temporary health-check container image
+- `REMOTE_BOOT_FARM_TARGETS`, `REMOTE_BOOT_LAB_TARGETS`, `REMOTE_BOOT_MAC_<TARGET>`:
+  what exists in each group and how to wake it
+- `REMOTE_BOOT_SLACK_ENABLED`, `REMOTE_BOOT_SLACK_WEBHOOK_URL`:
+  whether real Slack alerts are sent and which webhook receives them
+
+## Slack test
+
+1. In `config/remote_boot.local.env`, set:
+
+```bash
+REMOTE_BOOT_SLACK_ENABLED=true
+REMOTE_BOOT_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+```
+
+2. Send a test message:
+
+```bash
+./script/test_slack_notification.sh
+```
+
+You can also override the message text:
+
+```bash
+./script/test_slack_notification.sh --message "remote_boot slack test"
+```
+
+If Slack is configured, real alert paths now try Slack first and fall back to `REMOTE_BOOT_ALERT_STUB_LOG_FILE` if delivery fails.
+
 Manual health-check logs:
 
 ```bash
@@ -132,7 +211,7 @@ Log format:
 - boot health checks create a temporary GPU test container directly via Docker and remove it without writing to the DB.
 - health-check runs can write per-run logs to `REMOTE_BOOT_HEALTH_LOG_DIR` when `REMOTE_BOOT_ENABLE_HEALTH_LOGGING=true`.
 - service and orchestration logs use an ISO timestamp plus tag format like `[BOOT]`, `[GATE]`, `[HEALTH]`, `[WAKE]`, `[CONTAINER]`, and `[SMOKE]`.
-- unrecovered failures are written to `REMOTE_BOOT_ALERT_STUB_LOG_FILE` by the dummy notifier, so Slack delivery can be added later without changing the call sites.
+- unrecovered failures are written to `REMOTE_BOOT_ALERT_STUB_LOG_FILE` when Slack is disabled or Slack delivery fails.
 - test container share mounts can use `REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE="/home/tako%s/share/user-share/"`; `%s` is replaced with the server number, so `FARM1` and `LAB1` both use `/home/tako1/share/user-share/`.
 - test container GPU launch uses `REMOTE_BOOT_TEST_DOCKER_RUNTIME="auto"` by default, so hosts without a registered `nvidia` runtime still run with `--gpus`.
 - container restart uses `docker ps -aq`; after restart, each container is checked for SSH, but GPU checks run only for containers whose image is `decs` or `dguailab/decs` with any tag. CPU-only containers are logged as skipped.

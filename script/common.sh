@@ -73,6 +73,70 @@ notify_failure_stub() {
   log_event "ALERT" "stub=true ${message}"
 }
 
+slack_notifications_enabled() {
+  is_truthy "${REMOTE_BOOT_SLACK_ENABLED:-false}" &&
+    [[ -n "${REMOTE_BOOT_SLACK_WEBHOOK_URL:-}" ]]
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+send_slack_message() {
+  local message="$1"
+  local webhook_url="${REMOTE_BOOT_SLACK_WEBHOOK_URL:-}"
+  local message_prefix="${REMOTE_BOOT_SLACK_MESSAGE_PREFIX:-[remote_boot]}"
+  local formatted_message
+  local payload
+  local response
+  local flattened_response
+
+  if dry_run_enabled; then
+    log_dry_run "action=slack_send_skip reason=dry_run message=\"${message_prefix} ${message}\""
+    return 0
+  fi
+
+  if ! slack_notifications_enabled; then
+    log_warn "action=slack_send_skip reason=slack_not_configured"
+    return 1
+  fi
+
+  require_command "curl" "Install curl to enable Slack notifications." || return 1
+
+  formatted_message="${message}"
+  if [[ -n "${message_prefix}" ]]; then
+    formatted_message="${message_prefix} ${message}"
+  fi
+  payload="$(printf '{"text":"%s"}' "$(json_escape "${formatted_message}")")"
+
+  if ! response="$(curl -fsS -X POST "${webhook_url}" \
+    -H "Content-Type: application/json" \
+    --data "${payload}" 2>&1)"; then
+    flattened_response="$(flatten_command "${response}")"
+    log_error "action=slack_send_failed reason=curl_error response=\"${flattened_response}\""
+    return 1
+  fi
+
+  if ! printf '%s' "${response}" | grep -Eq '^ok$'; then
+    flattened_response="$(flatten_command "${response}")"
+    log_error "action=slack_send_failed reason=api_error response=\"${flattened_response}\""
+    return 1
+  fi
+
+  log_event "ALERT" "slack=true delivery=webhook"
+  return 0
+}
+
+notify_failure() {
+  local message="$*"
+
+  if send_slack_message "${message}"; then
+    return 0
+  fi
+
+  notify_failure_stub "${message}"
+}
+
 load_remote_boot_runtime() {
   REMOTE_BOOT_ANSIBLE_INVENTORY="${REMOTE_BOOT_ANSIBLE_INVENTORY:-${ANSIBLE_INVENTORY:-}}"
   ANSIBLE_INVENTORY="${REMOTE_BOOT_ANSIBLE_INVENTORY}"

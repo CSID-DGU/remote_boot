@@ -199,7 +199,7 @@ if [[ ${#priority_targets[@]} -gt 0 ]]; then
     wake_args+=(--dry-run)
   fi
   if ! "${WAKE_SCRIPT}" "${wake_args[@]}" "${priority_targets[@]}"; then
-    notify_failure_stub "stage=priority_wake reason=wake_failed targets=\"${priority_targets[*]}\""
+    notify_failure "stage=priority_wake reason=wake_failed targets=\"${priority_targets[*]}\""
     exit 1
   fi
 fi
@@ -217,7 +217,7 @@ if [[ ${#remaining_targets[@]} -gt 0 ]]; then
       --timeout-seconds "${REMOTE_BOOT_GATE_TIMEOUT_SECONDS}" \
       --poll-seconds "${REMOTE_BOOT_GATE_POLL_SECONDS}" \
       "${priority_targets[@]}"; then
-      notify_failure_stub "stage=priority_gate reason=health_check_failed targets=\"${priority_targets[*]}\""
+      notify_failure "stage=priority_gate reason=health_check_failed targets=\"${priority_targets[*]}\""
       exit 1
     fi
     log_event "GATE" "stage=passed targets=\"${priority_targets[*]}\""
@@ -238,7 +238,7 @@ if [[ ${#remaining_targets[@]} -gt 0 ]]; then
     wake_args+=(--dry-run)
   fi
   if ! "${WAKE_SCRIPT}" "${wake_args[@]}" "${remaining_targets[@]}"; then
-    notify_failure_stub "stage=remaining_wake reason=wake_failed targets=\"${remaining_targets[*]}\""
+    notify_failure "stage=remaining_wake reason=wake_failed targets=\"${remaining_targets[*]}\""
     exit 1
   fi
 elif is_truthy "${REMOTE_BOOT_ENABLE_GATE}" && [[ ${#priority_targets[@]} -gt 0 ]]; then
@@ -257,7 +257,7 @@ if is_truthy "${REMOTE_BOOT_ENABLE_CONTAINER_RESTART}" && [[ ${#selected_targets
     --timeout-seconds "${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS}" \
     --poll-seconds "${REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS}" \
     "${selected_targets[@]}"; then
-    notify_failure_stub "stage=restart_all_remote_containers reason=restart_or_postcheck_failed targets=\"${selected_targets[*]}\""
+    notify_failure "stage=restart_all_remote_containers reason=restart_or_postcheck_failed targets=\"${selected_targets[*]}\""
     exit 1
   fi
   log_event "CONTAINER" "stage=restart_completed targets=\"${selected_targets[*]}\""

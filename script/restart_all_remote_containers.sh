@@ -267,7 +267,7 @@ while [[ ${#pending_servers[@]} -gt 0 ]]; do
     remaining_time=$((deadline - SECONDS))
     if (( remaining_time <= 0 )); then
       log_error "container_restart_timeout pending=\"${pending_servers[*]}\""
-      notify_failure_stub "stage=restart_all_remote_containers reason=timeout pending=\"${pending_servers[*]}\""
+      notify_failure "stage=restart_all_remote_containers reason=timeout pending=\"${pending_servers[*]}\""
       exit 1
     fi
 
@@ -293,7 +293,7 @@ while [[ ${#pending_servers[@]} -gt 0 ]]; do
   remaining_time=$((deadline - SECONDS))
   if (( remaining_time <= 0 )); then
     log_error "container_restart_timeout pending=\"${pending_servers[*]}\""
-    notify_failure_stub "stage=restart_all_remote_containers reason=timeout pending=\"${pending_servers[*]}\""
+    notify_failure "stage=restart_all_remote_containers reason=timeout pending=\"${pending_servers[*]}\""
     exit 1
   fi
 

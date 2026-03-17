@@ -110,7 +110,7 @@ fail_with_notification() {
   local reason="$2"
 
   log_error "server=${SERVER_ID_INPUT} stage=${stage_name} reason=${reason}"
-  notify_failure_stub "server=${SERVER_ID_INPUT} stage=${stage_name} reason=${reason}"
+  notify_failure "server=${SERVER_ID_INPUT} stage=${stage_name} reason=${reason}"
   exit 1
 }
 
