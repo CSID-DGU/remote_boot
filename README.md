@@ -13,6 +13,7 @@ Wake-on-LAN targets can be sent automatically whenever this desktop boots.
 - `script/wait_for_priority_servers.sh`: retry health checks until timeout before waking the rest
 - `script/restart_all_remote_containers.sh`: run `docker restart $(docker ps -aq)` on selected servers with retry
 - `script/integration_smoke_test.sh`: manual ansible/docker/GPU smoke test before enabling boot automation
+- `script/dry_run_remote_boot.sh`: dry-run wrapper for wake, health, container, and full-flow simulations
 - `script/install_remote_boot_service.sh`: installs and enables the systemd boot service
 - `config/remote_boot.local.env`: local defaults used at boot time
 
@@ -58,7 +59,8 @@ Boot orchestration with staged wake-up:
 - `REMOTE_BOOT_ENABLE_GATE=true` waits for priority servers to pass health checks
 - the gate retries for up to `REMOTE_BOOT_GATE_TIMEOUT_SECONDS=360`
 - once the gate passes, the remaining selected targets are sent
-- finally, if `REMOTE_BOOT_ENABLE_CONTAINER_RESTART=true`, all selected servers run a full docker container restart
+- finally, if `REMOTE_BOOT_ENABLE_CONTAINER_RESTART=true`, all selected servers run a full docker container restart, then each restarted container is checked for `ssh` and `nvidia-smi`
+- when a recovery path still cannot fix the issue, a Slack placeholder notifier writes a stub alert log instead of sending a real message
 
 Standalone test container commands:
 
@@ -71,6 +73,45 @@ Recommended manual integration test:
 
 ```bash
 ./script/integration_smoke_test.sh --scope priority
+```
+
+Dry-run entrypoints:
+
+```bash
+# 1. WOL call simulation
+./script/dry_run_remote_boot.sh wake FARM1 LAB1
+
+# 2. Host mount/GPU check plus test-container plan
+./script/dry_run_remote_boot.sh health FARM1
+
+# 3. Restart-all-containers flow and per-container SSH/GPU plan
+./script/dry_run_remote_boot.sh containers FARM1
+
+# 4. Full orchestration
+./script/dry_run_remote_boot.sh --scope priority full
+./script/dry_run_remote_boot.sh full
+```
+
+Dry-run behavior:
+
+- `wake` and `full` do not send WOL packets, sleep, create containers, restart Docker, or restart containers.
+- `health` validates config and inventory, then prints the exact host checks, test-container create/delete commands, and automatic recovery commands that would be used.
+- `containers` does not restart anything, but it does read the current remote container inventory so it can show which containers would receive SSH checks and which ones would receive GPU checks.
+- For actual verification after a host is already up, use `./script/check_server_boot_health.sh --server-id FARM1` and `./script/restart_all_remote_containers.sh FARM1`.
+
+Manual health-check logs:
+
+```bash
+./script/check_server_boot_health.sh --server-id FARM1
+```
+
+This keeps terminal output and also writes a per-run log under `logs/health/` by default.
+Use `--log-file /path/to/file.log` to override the destination.
+
+Log format:
+
+```text
+2026-03-11T15:10:00+0900 [HEALTH] context=check_server_boot_health server=FARM1 stage=mount_check required_mount=...
 ```
 
 ## Git
@@ -86,7 +127,14 @@ Recommended manual integration test:
 - `LAB*` targets use `192.168.1.255`, and `FARM*` targets use `192.168.2.255` by default.
 - remote scripts can use `REMOTE_BOOT_ANSIBLE_INVENTORY`, or fall back to your existing `ansible.cfg` default inventory.
 - host mount checks expect `100.100.100.100:/294t/dcloud/share` for LAB and `100.100.100.120:/volume1/share` for FARM.
+- host NFS remount recovery uses `REMOTE_BOOT_HOST_SHARE_MOUNT_TEMPLATE`, which defaults to `/home/tako%s/share`.
+- automatic recovery commands use `sudo -n` on the remote hosts; if passwordless sudo is not available there, recovery will not run and the failure will fall through to the alert stub log.
 - boot health checks create a temporary GPU test container directly via Docker and remove it without writing to the DB.
+- health-check runs can write per-run logs to `REMOTE_BOOT_HEALTH_LOG_DIR` when `REMOTE_BOOT_ENABLE_HEALTH_LOGGING=true`.
+- service and orchestration logs use an ISO timestamp plus tag format like `[BOOT]`, `[GATE]`, `[HEALTH]`, `[WAKE]`, `[CONTAINER]`, and `[SMOKE]`.
+- unrecovered failures are written to `REMOTE_BOOT_ALERT_STUB_LOG_FILE` by the dummy notifier, so Slack delivery can be added later without changing the call sites.
 - test container share mounts can use `REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE="/home/tako%s/share/user-share/"`; `%s` is replaced with the server number, so `FARM1` and `LAB1` both use `/home/tako1/share/user-share/`.
-- container restart uses `docker ps -aq`; if a server has no containers, it logs and continues.
+- test container GPU launch uses `REMOTE_BOOT_TEST_DOCKER_RUNTIME="auto"` by default, so hosts without a registered `nvidia` runtime still run with `--gpus`.
+- container restart uses `docker ps -aq`; after restart, each container is checked for SSH, but GPU checks run only for containers whose image is `decs` or `dguailab/decs` with any tag. CPU-only containers are logged as skipped.
+- post-restart per-container checks use `REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS` and `REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS`.
 - If the network is not ready at boot, increase `REMOTE_BOOT_PRE_DELAY_SECONDS`.

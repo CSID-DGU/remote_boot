@@ -7,6 +7,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
 TIMEOUT_OVERRIDE=""
 POLL_OVERRIDE=""
+DRY_RUN=false
+
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/common.sh"
+set_log_context "wait_for_priority_servers"
 
 show_help() {
   cat <<EOF
@@ -16,6 +21,7 @@ Options:
   --config PATH           config file path (default: ${CONFIG_FILE})
   --timeout-seconds N     overall timeout for all checks
   --poll-seconds N        wait between retries
+  --dry-run               print the gate flow without executing health checks
   -h, --help              show this help
 EOF
 }
@@ -46,6 +52,10 @@ while [[ $# -gt 0 ]]; do
       POLL_OVERRIDE="$2"
       shift 2
       ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
     -h|--help)
       show_help
       exit 0
@@ -66,6 +76,10 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${CONFIG_FILE}"
   set +a
+fi
+
+if is_truthy "${DRY_RUN}"; then
+  export REMOTE_BOOT_DRY_RUN=true
 fi
 
 REMOTE_BOOT_GATE_TIMEOUT_SECONDS="${REMOTE_BOOT_GATE_TIMEOUT_SECONDS:-360}"
@@ -89,6 +103,15 @@ if [[ "${CHECK_SCRIPT}" != /* ]]; then
   CHECK_SCRIPT="$(cd "${PROJECT_ROOT}" && cd "$(dirname "${CHECK_SCRIPT}")" && pwd)/$(basename "${CHECK_SCRIPT}")"
 fi
 
+if dry_run_enabled; then
+  log_dry_run "action=gate_plan targets=\"$*\" timeout_seconds=${REMOTE_BOOT_GATE_TIMEOUT_SECONDS} poll_seconds=${REMOTE_BOOT_GATE_POLL_SECONDS}"
+  for server_id in "$@"; do
+    "${CHECK_SCRIPT}" --config "${CONFIG_FILE}" --server-id "${server_id}" --dry-run
+  done
+  log_event "GATE" "status=dry_run_completed servers=\"$*\""
+  exit 0
+fi
+
 declare -a pending_servers=("$@")
 declare -a passed_servers=()
 deadline=$((SECONDS + REMOTE_BOOT_GATE_TIMEOUT_SECONDS))
@@ -97,11 +120,11 @@ attempt=1
 while [[ ${#pending_servers[@]} -gt 0 ]]; do
   declare -a next_pending=()
 
-  echo "Priority gate attempt ${attempt}: ${pending_servers[*]}"
+  log_event "GATE" "attempt=${attempt} pending=\"${pending_servers[*]}\""
   for server_id in "${pending_servers[@]}"; do
     remaining_time=$((deadline - SECONDS))
     if (( remaining_time <= 0 )); then
-      echo "Timed out while waiting for priority servers: ${pending_servers[*]}" >&2
+      log_error "gate_timeout pending=\"${pending_servers[*]}\""
       exit 1
     fi
 
@@ -127,14 +150,14 @@ while [[ ${#pending_servers[@]} -gt 0 ]]; do
   done
 
   if [[ ${#next_pending[@]} -eq 0 ]]; then
-    echo "Priority servers passed boot health checks: ${passed_servers[*]}"
+    log_event "GATE" "status=passed servers=\"${passed_servers[*]}\""
     exit 0
   fi
 
   pending_servers=("${next_pending[@]}")
   remaining_time=$((deadline - SECONDS))
   if (( remaining_time <= 0 )); then
-    echo "Timed out while waiting for priority servers: ${pending_servers[*]}" >&2
+    log_error "gate_timeout pending=\"${pending_servers[*]}\""
     exit 1
   fi
 
@@ -143,7 +166,7 @@ while [[ ${#pending_servers[@]} -gt 0 ]]; do
     sleep_for="${remaining_time}"
   fi
 
-  echo "Pending priority servers: ${pending_servers[*]} (retrying in ${sleep_for}s)"
+  log_event "GATE" "status=pending servers=\"${pending_servers[*]}\" retry_in_seconds=${sleep_for}"
   sleep "${sleep_for}"
   attempt=$((attempt + 1))
 done

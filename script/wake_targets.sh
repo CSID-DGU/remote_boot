@@ -5,13 +5,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
+DRY_RUN=false
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
+set_log_context "wake_targets"
 
 show_help() {
   cat <<'EOF'
 Usage: wake_targets.sh [--config PATH] [--list-targets] TARGET [TARGET ...]
+
+Options:
+  --dry-run      print the packets that would be sent without sending them
 
 Targets:
   FARM1 FARM2 FARM6 FARM7 FARM8 FARM9
@@ -54,7 +59,12 @@ send_magic_packet() {
   local mac="$2"
   local broadcast_ip="$3"
 
-  echo "Waking ${name} (${mac}) via ${broadcast_ip}"
+  if dry_run_enabled; then
+    log_dry_run "action=wake target=${name} mac=${mac} broadcast_ip=${broadcast_ip} command=\"wakeonlan -i ${broadcast_ip} ${mac}\""
+    return 0
+  fi
+
+  log_event "WAKE" "target=${name} mac=${mac} broadcast_ip=${broadcast_ip}"
   wakeonlan -i "${broadcast_ip}" "${mac}"
 }
 
@@ -135,6 +145,14 @@ main() {
         CONFIG_FILE="$2"
         shift 2
         ;;
+      --dry-run)
+        DRY_RUN=true
+        shift
+        ;;
+      -h|--help)
+        show_help
+        exit 0
+        ;;
       --list-targets)
         list_only=true
         shift
@@ -147,17 +165,16 @@ main() {
         echo "Unknown option: $1" >&2
         exit 1
         ;;
-      -h|--help)
-        show_help
-        exit 0
-        ;;
       *)
         break
         ;;
     esac
   done
 
-  require_command "wakeonlan" "Install it with: sudo apt install wakeonlan"
+  if is_truthy "${DRY_RUN}"; then
+    export REMOTE_BOOT_DRY_RUN=true
+  fi
+
   load_config
   load_target_groups
   REMOTE_BOOT_FARM_BROADCAST_IP="${REMOTE_BOOT_FARM_BROADCAST_IP:-192.168.2.255}"
@@ -166,6 +183,12 @@ main() {
   if [[ "${list_only}" == "true" ]]; then
     list_targets
     exit 0
+  fi
+
+  if ! dry_run_enabled; then
+    require_command "wakeonlan" "Install it with: sudo apt install wakeonlan"
+  else
+    log_dry_run "action=wake_targets_start targets=\"$*\""
   fi
 
   if [[ $# -eq 0 ]]; then

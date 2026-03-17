@@ -7,9 +7,11 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
 SERVER_ID_INPUT=""
 CONTAINER_NAME_OVERRIDE=""
+DRY_RUN=false
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
+set_log_context "create_test_container"
 
 show_help() {
   cat <<EOF
@@ -19,6 +21,7 @@ Options:
   --config PATH           config file path (default: ${CONFIG_FILE})
   --server-id SERVER_ID   target server id, for example FARM1 or LAB1
   --container-name NAME   override test container name
+  --dry-run               print the docker commands without running them
   -h, --help              show this help
 EOF
 }
@@ -60,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       CONTAINER_NAME_OVERRIDE="$2"
       shift 2
       ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
     -h|--help)
       show_help
       exit 0
@@ -84,6 +91,10 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   set +a
 fi
 
+if is_truthy "${DRY_RUN}"; then
+  export REMOTE_BOOT_DRY_RUN=true
+fi
+
 load_remote_boot_runtime
 
 REMOTE_BOOT_TEST_CONTAINER_NAME_PREFIX="${REMOTE_BOOT_TEST_CONTAINER_NAME_PREFIX:-boot_test_probe}"
@@ -96,6 +107,7 @@ REMOTE_BOOT_TEST_UID="${REMOTE_BOOT_TEST_UID:-10000}"
 REMOTE_BOOT_TEST_GID="${REMOTE_BOOT_TEST_GID:-10000}"
 REMOTE_BOOT_TEST_PASSWORD="${REMOTE_BOOT_TEST_PASSWORD:-ailab2260}"
 REMOTE_BOOT_TEST_MEMORY="${REMOTE_BOOT_TEST_MEMORY:-192g}"
+REMOTE_BOOT_TEST_DOCKER_RUNTIME="${REMOTE_BOOT_TEST_DOCKER_RUNTIME:-auto}"
 REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE="${REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE:-}"
 REMOTE_BOOT_TEST_SHARE_SOURCE_BASE="${REMOTE_BOOT_TEST_SHARE_SOURCE_BASE:-/home/tako}"
 REMOTE_BOOT_TEST_SHARE_SOURCE_SUFFIX="${REMOTE_BOOT_TEST_SHARE_SOURCE_SUFFIX:-/share/user-share/}"
@@ -109,6 +121,9 @@ validate_simple_value "username" "${REMOTE_BOOT_TEST_USERNAME}" '^[A-Za-z0-9_.-]
 validate_simple_value "group" "${REMOTE_BOOT_TEST_GROUP}" '^[A-Za-z0-9_.-]+$'
 validate_simple_value "uid" "${REMOTE_BOOT_TEST_UID}" '^[0-9]+$'
 validate_simple_value "gid" "${REMOTE_BOOT_TEST_GID}" '^[0-9]+$'
+if [[ "${REMOTE_BOOT_TEST_DOCKER_RUNTIME}" != "auto" && "${REMOTE_BOOT_TEST_DOCKER_RUNTIME}" != "none" && -n "${REMOTE_BOOT_TEST_DOCKER_RUNTIME}" ]]; then
+  validate_simple_value "docker runtime" "${REMOTE_BOOT_TEST_DOCKER_RUNTIME}" '^[A-Za-z0-9_.-]+$'
+fi
 
 require_ansible_cli || exit 1
 require_ansible_inventory || exit 1
@@ -128,10 +143,44 @@ else
   share_source="${REMOTE_BOOT_TEST_SHARE_SOURCE_BASE}${server_number}${REMOTE_BOOT_TEST_SHARE_SOURCE_SUFFIX}"
 fi
 
+runtime_argument=""
+runtime_argument_preview=""
+case "${REMOTE_BOOT_TEST_DOCKER_RUNTIME}" in
+  ""|none)
+    ;;
+  auto)
+    if dry_run_enabled; then
+      runtime_argument_preview="<auto-detect --runtime=nvidia when remote docker advertises it>"
+    elif run_remote_shell "${target_host}" "docker info --format '{{json .Runtimes}}' | grep -F '\"nvidia\"' >/dev/null"; then
+      runtime_argument=" --runtime=nvidia"
+    fi
+    ;;
+  *)
+    runtime_argument=" --runtime=${REMOTE_BOOT_TEST_DOCKER_RUNTIME}"
+    ;;
+esac
+
+if [[ -z "${runtime_argument_preview}" ]]; then
+  runtime_argument_preview="${runtime_argument}"
+fi
+
+log_event_stderr "CONTAINER" "server=${SERVER_ID_INPUT} action=create_start host=${target_host} container=${container_name} image=${image_ref} share_source=${share_source} runtime_mode=${REMOTE_BOOT_TEST_DOCKER_RUNTIME} runtime_argument=\"${runtime_argument:-}\""
+
+remote_run_command="docker run -dit --gpus device=all --memory=${REMOTE_BOOT_TEST_MEMORY} --memory-swap=${REMOTE_BOOT_TEST_MEMORY}${runtime_argument} --cap-add=SYS_ADMIN --ipc=host --mount type=bind,source='${share_source}',target='${REMOTE_BOOT_TEST_SHARE_TARGET}' --name '${container_name}' -e USER_ID='${REMOTE_BOOT_TEST_USERNAME}' -e GID='${REMOTE_BOOT_TEST_GID}' -e USER_PW='${REMOTE_BOOT_TEST_PASSWORD}' -e USER_GROUP='${REMOTE_BOOT_TEST_GROUP}' -e UID='${REMOTE_BOOT_TEST_UID}' '${image_ref}'"
+remote_run_command_preview="docker run -dit --gpus device=all --memory=${REMOTE_BOOT_TEST_MEMORY} --memory-swap=${REMOTE_BOOT_TEST_MEMORY}${runtime_argument_preview} --cap-add=SYS_ADMIN --ipc=host --mount type=bind,source='${share_source}',target='${REMOTE_BOOT_TEST_SHARE_TARGET}' --name '${container_name}' -e USER_ID='${REMOTE_BOOT_TEST_USERNAME}' -e GID='${REMOTE_BOOT_TEST_GID}' -e USER_PW='${REMOTE_BOOT_TEST_PASSWORD}' -e USER_GROUP='${REMOTE_BOOT_TEST_GROUP}' -e UID='${REMOTE_BOOT_TEST_UID}' '${image_ref}'"
+
+if dry_run_enabled; then
+  log_dry_run "server=${SERVER_ID_INPUT} action=create_plan host=${target_host} container=${container_name}"
+  log_dry_run "server=${SERVER_ID_INPUT} action=remote_command host=${target_host} command=\"docker rm -f '${container_name}' >/dev/null 2>&1 || true\""
+  log_dry_run "server=${SERVER_ID_INPUT} action=remote_command host=${target_host} command=\"docker pull '${image_ref}'\""
+  log_dry_run "server=${SERVER_ID_INPUT} action=remote_command host=${target_host} command=\"${remote_run_command_preview}\""
+  printf '%s\n' "${container_name}"
+  exit 0
+fi
+
 run_remote_shell "${target_host}" "docker rm -f '${container_name}' >/dev/null 2>&1 || true" >/dev/null
 run_remote_shell "${target_host}" "docker pull '${image_ref}'" >/dev/null
 
-remote_run_command="docker run -dit --gpus device=all --memory=${REMOTE_BOOT_TEST_MEMORY} --memory-swap=${REMOTE_BOOT_TEST_MEMORY} --runtime=nvidia --cap-add=SYS_ADMIN --ipc=host --mount type=bind,source='${share_source}',target='${REMOTE_BOOT_TEST_SHARE_TARGET}' --name '${container_name}' -e USER_ID='${REMOTE_BOOT_TEST_USERNAME}' -e GID='${REMOTE_BOOT_TEST_GID}' -e USER_PW='${REMOTE_BOOT_TEST_PASSWORD}' -e USER_GROUP='${REMOTE_BOOT_TEST_GROUP}' -e UID='${REMOTE_BOOT_TEST_UID}' '${image_ref}'"
 container_output="$(run_remote_shell_capture "${target_host}" "${remote_run_command}")" || {
   run_remote_shell "${target_host}" "docker rm -f '${container_name}' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
   exit 1
@@ -139,11 +188,12 @@ container_output="$(run_remote_shell_capture "${target_host}" "${remote_run_comm
 
 container_id="$(printf '%s\n' "${container_output}" | tail -n1 | tr -d '\r')"
 if [[ -z "${container_id}" || ! "${container_id}" =~ ^[0-9a-f]{12,64}$ ]]; then
-  echo "Error: unexpected container id returned from ${target_host}: ${container_id}" >&2
+  log_error "server=${SERVER_ID_INPUT} action=create_failed reason=unexpected_container_id host=${target_host} container=${container_name} container_id=${container_id}"
   run_remote_shell "${target_host}" "docker rm -f '${container_name}' >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
   exit 1
 fi
 
 run_remote_shell "${target_host}" "docker inspect '${container_name}' >/dev/null 2>&1" >/dev/null
 
+log_event_stderr "CONTAINER" "server=${SERVER_ID_INPUT} action=create_complete host=${target_host} container=${container_name} container_id=${container_id}"
 printf '%s\n' "${container_name}"

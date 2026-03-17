@@ -13,9 +13,77 @@ require_command() {
   fi
 }
 
+log_timestamp() {
+  date +"%Y-%m-%dT%H:%M:%S%z"
+}
+
+set_log_context() {
+  REMOTE_BOOT_LOG_CONTEXT="$1"
+  export REMOTE_BOOT_LOG_CONTEXT
+}
+
+log_event() {
+  local tag="$1"
+  shift
+  local message="$*"
+
+  if [[ -n "${REMOTE_BOOT_LOG_CONTEXT:-}" ]]; then
+    message="context=${REMOTE_BOOT_LOG_CONTEXT} ${message}"
+  fi
+
+  printf '%s [%s] %s\n' "$(log_timestamp)" "${tag}" "${message}"
+}
+
+log_event_stderr() {
+  local tag="$1"
+  shift
+  local message="$*"
+
+  if [[ -n "${REMOTE_BOOT_LOG_CONTEXT:-}" ]]; then
+    message="context=${REMOTE_BOOT_LOG_CONTEXT} ${message}"
+  fi
+
+  printf '%s [%s] %s\n' "$(log_timestamp)" "${tag}" "${message}" >&2
+}
+
+log_warn() {
+  log_event "WARN" "$*"
+}
+
+log_dry_run() {
+  log_event "DRYRUN" "$*"
+}
+
+log_error() {
+  local message="$*"
+
+  if [[ -n "${REMOTE_BOOT_LOG_CONTEXT:-}" ]]; then
+    message="context=${REMOTE_BOOT_LOG_CONTEXT} ${message}"
+  fi
+
+  printf '%s [%s] %s\n' "$(log_timestamp)" "ERROR" "${message}" >&2
+}
+
+notify_failure_stub() {
+  local message="$*"
+  local alert_log_file="${REMOTE_BOOT_ALERT_STUB_LOG_FILE:-${PROJECT_ROOT:-.}/logs/alerts/remote_boot_alert_stub.log}"
+
+  mkdir -p "$(dirname "${alert_log_file}")" 2>/dev/null || true
+  printf '%s [%s] %s\n' "$(log_timestamp)" "ALERT" "${message}" >>"${alert_log_file}" 2>/dev/null || true
+  log_event "ALERT" "stub=true ${message}"
+}
+
 load_remote_boot_runtime() {
   REMOTE_BOOT_ANSIBLE_INVENTORY="${REMOTE_BOOT_ANSIBLE_INVENTORY:-${ANSIBLE_INVENTORY:-}}"
   ANSIBLE_INVENTORY="${REMOTE_BOOT_ANSIBLE_INVENTORY}"
+}
+
+dry_run_enabled() {
+  is_truthy "${REMOTE_BOOT_DRY_RUN:-false}"
+}
+
+flatten_command() {
+  printf '%s' "$1" | tr '\n' ' ' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
 }
 
 parse_target_string() {
@@ -250,6 +318,30 @@ run_remote_shell() {
   run_ansible "${host_alias}" -m shell -a "${remote_command}"
 }
 
+run_remote_shell_with_timeout() {
+  local host_alias="$1"
+  local remote_command="$2"
+  local timeout_seconds="$3"
+  local ansible_command=()
+
+  if ! [[ "${timeout_seconds}" =~ ^[0-9]+$ ]] || (( timeout_seconds < 1 )); then
+    run_remote_shell "${host_alias}" "${remote_command}"
+    return
+  fi
+
+  if [[ -n "${ANSIBLE_INVENTORY:-}" ]]; then
+    ansible_command=(ansible "${host_alias}" -i "${ANSIBLE_INVENTORY}" -m shell -a "${remote_command}")
+  else
+    ansible_command=(ansible "${host_alias}" -m shell -a "${remote_command}")
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${timeout_seconds}" "${ansible_command[@]}"
+  else
+    "${ansible_command[@]}"
+  fi
+}
+
 run_remote_shell_capture() {
   local host_alias="$1"
   local remote_command="$2"
@@ -261,4 +353,22 @@ run_remote_shell_capture() {
   fi
 
   printf '%s\n' "${output}"
+}
+
+enable_script_logging() {
+  local log_file="$1"
+
+  if [[ -z "${log_file}" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${log_file}")"
+
+  if [[ "${REMOTE_BOOT_ACTIVE_LOG_FILE:-}" == "${log_file}" ]]; then
+    return 0
+  fi
+
+  exec > >(tee -a "${log_file}") 2>&1
+  REMOTE_BOOT_ACTIVE_LOG_FILE="${log_file}"
+  export REMOTE_BOOT_ACTIVE_LOG_FILE
 }

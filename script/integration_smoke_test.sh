@@ -10,6 +10,7 @@ TARGET_SCOPE="priority"
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
+set_log_context "integration_smoke_test"
 
 show_help() {
   cat <<EOF
@@ -97,29 +98,23 @@ for server_id in "${selected_server_ids[@]}"; do
   selected_hosts+=("$(compose_ansible_host_alias "${domain_name}" "${server_number}")")
 done
 
-echo "Selected scope: ${TARGET_SCOPE}"
-echo "Targets: ${selected_server_ids[*]}"
-echo
-echo "1. Direct ansible connectivity"
+log_event "SMOKE" "scope=${TARGET_SCOPE} targets=\"${selected_server_ids[*]}\""
+log_event "SMOKE" "stage=ansible_ping"
 for host_alias in "${selected_hosts[@]}"; do
   run_ansible "${host_alias}" -m ping
 done
-echo
-echo "2. Host docker availability"
+log_event "SMOKE" "stage=host_docker"
 for host_alias in "${selected_hosts[@]}"; do
   run_ansible "${host_alias}" -m shell -a "docker version --format '{{.Server.Version}}'"
 done
-echo
-echo "3. Host GPU availability"
+log_event "SMOKE" "stage=host_gpu"
 for host_alias in "${selected_hosts[@]}"; do
   run_ansible "${host_alias}" -m shell -a "nvidia-smi --query-gpu=name,driver_version --format=csv,noheader"
 done
-echo
-echo "4. Boot health checks"
+log_event "SMOKE" "stage=boot_health_checks"
 "${SCRIPT_DIR}/wait_for_priority_servers.sh" --config "${CONFIG_FILE}" "${selected_server_ids[@]}"
 
 if [[ "${RUN_FULL_FLOW}" == "true" ]]; then
-  echo
-  echo "5. Full remote boot flow"
+  log_event "SMOKE" "stage=full_flow"
   "${SCRIPT_DIR}/run_remote_boot.sh" --config "${CONFIG_FILE}" "${selected_server_ids[@]}"
 fi
