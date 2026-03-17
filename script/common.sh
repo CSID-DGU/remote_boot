@@ -307,6 +307,7 @@ format_slack_stage_label() {
     remaining_wake) printf '%s\n' "나머지 서버 WOL 전송" ;;
     remaining_gate) printf '%s\n' "나머지 서버 호스트 점검" ;;
     restart_all_remote_containers) printf '%s\n' "컨테이너 기동 및 점검" ;;
+    container_monitor) printf '%s\n' "컨테이너 모니터 점검" ;;
     mount_check) printf '%s\n' "NFS 마운트 점검" ;;
     host_gpu_check) printf '%s\n' "호스트 GPU 점검" ;;
     create_test_container) printf '%s\n' "테스트 컨테이너 생성" ;;
@@ -321,7 +322,12 @@ format_slack_reason_label() {
     wake_failed) printf '%s\n' "WOL 전송 실패" ;;
     health_check_failed) printf '%s\n' "호스트 점검 실패" ;;
     restart_or_postcheck_failed) printf '%s\n' "컨테이너 기동 또는 점검 실패" ;;
+    container_health_check_failed) printf '%s\n' "컨테이너 점검 실패" ;;
     timeout) printf '%s\n' "제한 시간 초과" ;;
+    docker_start_failed) printf '%s\n' "컨테이너 시작 실패" ;;
+    container_not_running) printf '%s\n' "컨테이너 비실행 상태" ;;
+    ssh_unavailable) printf '%s\n' "컨테이너 SSH 확인 실패" ;;
+    gpu_unavailable) printf '%s\n' "컨테이너 GPU 확인 실패" ;;
     mount_check_failed) printf '%s\n' "NFS 마운트 확인 실패" ;;
     host_gpu_check_failed) printf '%s\n' "호스트 GPU 확인 실패" ;;
     create_test_container_failed) printf '%s\n' "테스트 컨테이너 생성 실패" ;;
@@ -335,7 +341,7 @@ build_slack_message() {
   local message="$1"
   local route_hint="${2:-}"
   local message_prefix="${3:-[remote_boot]}"
-  local route_label server_value targets_value pending_value stage_value reason_value host_value time_value test_value
+  local route_label server_value targets_value pending_value stage_value reason_value host_value time_value test_value container_value container_id_value
   local stage_label reason_label detail_value title
   local formatted_message=""
   local log_file_label="${REMOTE_BOOT_LOG_FILE:-/var/log/remote-boot.log}"
@@ -349,6 +355,8 @@ build_slack_message() {
   host_value="$(extract_message_value "${message}" "host" 2>/dev/null || true)"
   time_value="$(extract_message_value "${message}" "time" 2>/dev/null || true)"
   test_value="$(extract_message_value "${message}" "test_message" 2>/dev/null || true)"
+  container_value="$(extract_message_value "${message}" "container" 2>/dev/null || true)"
+  container_id_value="$(extract_message_value "${message}" "container_id" 2>/dev/null || true)"
 
   if [[ -n "${test_value}" ]]; then
     title=":bell: *${message_prefix} Slack 알림 테스트*"
@@ -385,14 +393,22 @@ build_slack_message() {
     formatted_message+=$'\n'"▶ *원인*: ${reason_label}"
   fi
 
+  if [[ -n "${container_value}" ]]; then
+    formatted_message+=$'\n'"▶ *컨테이너*: ${container_value}"
+  fi
+
+  if [[ -n "${container_id_value}" ]]; then
+    formatted_message+=$'\n'"▶ *컨테이너 ID*: ${container_id_value}"
+  fi
+
   if [[ -z "${test_value}" ]]; then
     formatted_message+=$'\n'"▶ *로그*: \`${log_file_label}\`"
   fi
 
   detail_value="$(flatten_command "${message}")"
-  formatted_message+=$'\n'"```"
-  formatted_message+=$'\n'"${detail_value}"
-  formatted_message+=$'\n'"```"
+  formatted_message="${formatted_message}"$'\n''```'
+  formatted_message="${formatted_message}"$'\n'"${detail_value}"
+  formatted_message="${formatted_message}"$'\n''```'
 
   printf '%s\n' "${formatted_message}"
 }

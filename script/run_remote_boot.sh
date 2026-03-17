@@ -118,6 +118,29 @@ if [[ "${RESTART_SCRIPT}" != /* ]]; then
   RESTART_SCRIPT="$(cd "${PROJECT_ROOT}" && cd "$(dirname "${RESTART_SCRIPT}")" && pwd)/$(basename "${RESTART_SCRIPT}")"
 fi
 
+extract_container_failure_detail_from_output() {
+  local output="$1"
+  local failure_line reason_value container_value container_id_value
+
+  failure_line="$(printf '%s\n' "${output}" | grep -E 'reason=(docker_start_failed|container_not_running|ssh_unavailable|gpu_unavailable)' | tail -n 1 || true)"
+  [[ -n "${failure_line}" ]] || return 1
+
+  reason_value="$(printf '%s\n' "${failure_line}" | sed -n 's/.*reason=\([^[:space:]]*\).*/\1/p' | head -n 1)"
+  container_value="$(printf '%s\n' "${failure_line}" | sed -n 's/.*container=\([^[:space:]]*\).*/\1/p' | head -n 1)"
+  container_id_value="$(printf '%s\n' "${failure_line}" | sed -n 's/.*container_id=\([^[:space:]]*\).*/\1/p' | head -n 1)"
+
+  [[ -n "${reason_value}" ]] || return 1
+
+  printf 'reason=%s' "${reason_value}"
+  if [[ -n "${container_value}" ]]; then
+    printf ' container=%s' "${container_value}"
+  fi
+  if [[ -n "${container_id_value}" ]]; then
+    printf ' container_id=%s' "${container_id_value}"
+  fi
+  printf '\n'
+}
+
 if [[ -n "${PRE_DELAY_OVERRIDE}" ]]; then
   REMOTE_BOOT_PRE_DELAY_SECONDS="${PRE_DELAY_OVERRIDE}"
 fi
@@ -269,17 +292,26 @@ fi
 if is_truthy "${REMOTE_BOOT_ENABLE_CONTAINER_RESTART}" && [[ ${#selected_targets[@]} -gt 0 ]]; then
   log_event "CONTAINER" "stage=restart_requested targets=\"${selected_targets[*]}\" timeout_seconds=${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS} poll_seconds=${REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS}"
   restart_args=()
+  restart_output=""
+  restart_failure_detail=""
   if dry_run_enabled; then
     restart_args+=(--dry-run)
   fi
-  if ! "${RESTART_SCRIPT}" \
+  if ! restart_output="$("${RESTART_SCRIPT}" \
     "${restart_args[@]}" \
     --config "${CONFIG_FILE}" \
     --timeout-seconds "${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS}" \
     --poll-seconds "${REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS}" \
-    "${selected_targets[@]}"; then
-    notify_failure "stage=restart_all_remote_containers reason=restart_or_postcheck_failed targets=\"${selected_targets[*]}\""
+    "${selected_targets[@]}" 2>&1)"; then
+    [[ -n "${restart_output}" ]] && printf '%s\n' "${restart_output}" >&2
+    restart_failure_detail="$(extract_container_failure_detail_from_output "${restart_output}" || true)"
+    if [[ -n "${restart_failure_detail}" ]]; then
+      notify_failure "stage=restart_all_remote_containers targets=\"${selected_targets[*]}\" ${restart_failure_detail}"
+    else
+      notify_failure "stage=restart_all_remote_containers reason=restart_or_postcheck_failed targets=\"${selected_targets[*]}\""
+    fi
     exit 1
   fi
+  [[ -n "${restart_output}" ]] && printf '%s\n' "${restart_output}"
   log_event "CONTAINER" "stage=restart_completed targets=\"${selected_targets[*]}\""
 fi

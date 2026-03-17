@@ -92,6 +92,7 @@ REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS="${REMOTE_BOOT_CONTAINER_RESTART_T
 REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS="${REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS:-20}"
 REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS="${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS:-60}"
 REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS="${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS:-5}"
+REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX="${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX:-^(decs|dguailab/decs)(:|$)}"
 
 if [[ -n "${TIMEOUT_OVERRIDE}" ]]; then
   REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS="${TIMEOUT_OVERRIDE}"
@@ -111,15 +112,44 @@ load_remote_boot_runtime
 require_ansible_cli || exit 1
 require_ansible_inventory || exit 1
 
+is_target_container_image() {
+  local container_image="$1"
+  printf '%s\n' "${container_image}" | grep -Eq "${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}"
+}
+
+extract_container_failure_detail() {
+  local output="$1"
+  local failure_line reason_value container_value container_id_value
+
+  failure_line="$(printf '%s\n' "${output}" | grep -E 'reason=(docker_start_failed|container_not_running|ssh_unavailable|gpu_unavailable)' | tail -n 1 || true)"
+  [[ -n "${failure_line}" ]] || return 1
+
+  reason_value="$(printf '%s\n' "${failure_line}" | sed -n 's/.*reason=\([^[:space:]]*\).*/\1/p' | head -n 1)"
+  container_value="$(printf '%s\n' "${failure_line}" | sed -n 's/.*container=\([^[:space:]]*\).*/\1/p' | head -n 1)"
+  container_id_value="$(printf '%s\n' "${failure_line}" | sed -n 's/.*container_id=\([^[:space:]]*\).*/\1/p' | head -n 1)"
+
+  [[ -n "${reason_value}" ]] || return 1
+
+  printf 'reason=%s' "${reason_value}"
+  if [[ -n "${container_value}" ]]; then
+    printf ' container=%s' "${container_value}"
+  fi
+  if [[ -n "${container_id_value}" ]]; then
+    printf ' container_id=%s' "${container_id_value}"
+  fi
+  printf '\n'
+}
+
 dry_run_restart_plan() {
   local server_id="$1"
   local host_alias="$2"
   local inventory_output container_lines
   local container_id container_name container_status container_image
+  local matched_target_count=0
 
   if is_truthy "${MONITOR_MODE}"; then
-    log_dry_run "server=${server_id} action=monitor_plan host=${host_alias} overall_timeout_seconds=${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS} poll_seconds=${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS}"
-    log_dry_run "server=${server_id} action=remote_command host=${host_alias} command=\"docker start <stopped_containers>\""
+    log_dry_run "stage=container_monitor server=${server_id} action=monitor_plan host=${host_alias} overall_timeout_seconds=${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS} poll_seconds=${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS}"
+    log_dry_run "stage=container_monitor server=${server_id} action=remote_command host=${host_alias} command=\"docker start <stopped_containers>\""
   else
     log_dry_run "server=${server_id} action=restart_plan host=${host_alias} overall_timeout_seconds=${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS} retry_poll_seconds=${REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS}"
     log_dry_run "server=${server_id} action=remote_command host=${host_alias} command=\"docker start <stopped_containers>\""
@@ -139,6 +169,13 @@ dry_run_restart_plan() {
       continue
     fi
 
+    if ! is_target_container_image "${container_image}"; then
+      log_dry_run "server=${server_id} action=container_skip host=${host_alias} container=${container_name} container_id=${container_id} reason=non_target_image image=${container_image}"
+      continue
+    fi
+
+    matched_target_count=$((matched_target_count + 1))
+
     log_dry_run "server=${server_id} action=container_plan host=${host_alias} container=${container_name} container_id=${container_id} status=\"${container_status}\" image=${container_image}"
     if ! printf '%s\n' "${container_status}" | grep -Eq '^(Up|Restarting)\b'; then
       log_dry_run "server=${server_id} action=start_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker start '${container_id}'\""
@@ -146,15 +183,15 @@ dry_run_restart_plan() {
     log_dry_run "server=${server_id} action=ssh_check_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker exec '${container_id}' sh -lc \\\"service ssh status >/dev/null 2>&1 || { [ -x /etc/init.d/ssh ] && /etc/init.d/ssh status >/dev/null 2>&1; } || ps -ef | grep '[s]shd' >/dev/null\\\"\""
     log_dry_run "server=${server_id} action=ssh_recovery_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker exec '${container_id}' sh -lc \\\"service ssh start >/dev/null 2>&1 || { [ -x /etc/init.d/ssh ] && /etc/init.d/ssh start >/dev/null 2>&1; } || true\\\"\""
 
-    if printf '%s\n' "${container_image}" | grep -Eq '^(decs|dguailab/decs)(:|$)'; then
-      log_dry_run "server=${server_id} action=gpu_check_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker exec '${container_id}' nvidia-smi\""
-      if ! is_truthy "${MONITOR_MODE}"; then
-        log_dry_run "server=${server_id} action=gpu_recovery_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker restart '${container_id}'\""
-      fi
-    else
-      log_dry_run "server=${server_id} action=gpu_check_skip host=${host_alias} container=${container_name} container_id=${container_id} reason=non_gpu_image image=${container_image}"
+    log_dry_run "server=${server_id} action=gpu_check_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker exec '${container_id}' nvidia-smi\""
+    if ! is_truthy "${MONITOR_MODE}"; then
+      log_dry_run "server=${server_id} action=gpu_recovery_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker restart '${container_id}'\""
     fi
   done <<< "${container_lines}"
+
+  if (( matched_target_count == 0 )); then
+    log_dry_run "server=${server_id} action=restart_skip host=${host_alias} reason=no_target_containers image_regex=${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}"
+  fi
 }
 
 if dry_run_enabled; then
@@ -178,21 +215,21 @@ restart_remote_containers() {
 if is_truthy "${MONITOR_MODE}"; then
     remote_command="$(cat <<EOF
 log_remote() {
-  printf '%s [CONTAINER] server=${server_id} host=${host_alias} %s\n' "\$(date +%Y-%m-%dT%H:%M:%S%z)" "\$*"
+  printf '%s [CONTAINER] server=${server_id} host=${host_alias} stage=container_monitor %s\n' "\$(date +%Y-%m-%dT%H:%M:%S%z)" "\$*"
 }
 
 log_remote_error() {
-  printf '%s [ERROR] server=${server_id} host=${host_alias} %s\n' "\$(date +%Y-%m-%dT%H:%M:%S%z)" "\$*" >&2
+  printf '%s [ERROR] server=${server_id} host=${host_alias} stage=container_monitor %s\n' "\$(date +%Y-%m-%dT%H:%M:%S%z)" "\$*" >&2
 }
 
-all_container_ids=\$(docker ps -aq)
-if [ -z "\$all_container_ids" ]; then
-  log_remote "action=monitor_skip reason=no_containers"
+target_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | cut -d'|' -f1 || true)
+if [ -z "\$(printf '%s' "\$target_container_ids" | tr -d '[:space:]')" ]; then
+  log_remote "action=monitor_skip reason=no_target_containers image_regex=${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}"
   exit 0
 fi
 
-stopped_container_ids=\$(docker ps -aq -f status=created -f status=exited -f status=dead)
-if [ -n "\$stopped_container_ids" ]; then
+stopped_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Status}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | awk -F'|' '\$2 !~ /^(Up|Restarting)/ {print \$1}' || true)
+if [ -n "\$(printf '%s' "\$stopped_container_ids" | tr -d '[:space:]')" ]; then
   log_remote "action=start_stopped_start"
   if ! docker start \$stopped_container_ids; then
     log_remote_error "action=monitor_failed reason=docker_start_failed"
@@ -202,7 +239,7 @@ else
   log_remote "action=start_stopped_skip reason=no_stopped_containers"
 fi
 
-for container_id in \$all_container_ids; do
+for container_id in \$target_container_ids; do
   container_name=\$(docker inspect --format '{% raw %}{{.Name}}{% endraw %}' "\$container_id" 2>/dev/null | sed 's#^/##')
   container_image=\$(docker inspect --format '{% raw %}{{.Config.Image}}{% endraw %}' "\$container_id" 2>/dev/null)
   container_running=\$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' "\$container_id" 2>/dev/null || true)
@@ -234,12 +271,6 @@ for container_id in \$all_container_ids; do
   if [ "\$ssh_ready" -ne 1 ]; then
     log_remote_error "action=monitor_failed reason=ssh_unavailable container=\$container_name container_id=\$container_id"
     exit 1
-  fi
-
-  if ! printf '%s\n' "\$container_image" | grep -Eq '^(decs|dguailab/decs)(:|$)'; then
-    log_remote "action=gpu_check_skip reason=non_gpu_image container=\$container_name container_id=\$container_id image=\$container_image"
-    log_remote "action=monitor_check_passed container=\$container_name container_id=\$container_id gpu_check=skipped"
-    continue
   fi
 
   gpu_deadline=\$((\$(date +%s) + ${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS}))
@@ -275,13 +306,14 @@ log_remote_error() {
 }
 
 all_container_ids=\$(docker ps -aq)
-if [ -z "\$all_container_ids" ]; then
-  log_remote "action=restart_skip reason=no_containers"
+target_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | cut -d'|' -f1 || true)
+if [ -z "\$(printf '%s' "\$target_container_ids" | tr -d '[:space:]')" ]; then
+  log_remote "action=restart_skip reason=no_target_containers image_regex=${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}"
   exit 0
 fi
 
-stopped_container_ids=\$(docker ps -aq -f status=created -f status=exited -f status=dead)
-if [ -n "\$stopped_container_ids" ]; then
+stopped_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Status}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | awk -F'|' '\$2 !~ /^(Up|Restarting)/ {print \$1}' || true)
+if [ -n "\$(printf '%s' "\$stopped_container_ids" | tr -d '[:space:]')" ]; then
   log_remote "action=start_stopped_start"
   if ! docker start \$stopped_container_ids; then
     log_remote "action=start_stopped_recovery_start recovery=docker_service_restart"
@@ -297,7 +329,7 @@ else
   log_remote "action=start_stopped_skip reason=no_stopped_containers"
 fi
 
-for container_id in \$all_container_ids; do
+for container_id in \$target_container_ids; do
   container_name=\$(docker inspect --format '{% raw %}{{.Name}}{% endraw %}' "\$container_id" 2>/dev/null | sed 's#^/##')
   container_image=\$(docker inspect --format '{% raw %}{{.Config.Image}}{% endraw %}' "\$container_id" 2>/dev/null)
   container_running=\$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' "\$container_id" 2>/dev/null || true)
@@ -329,12 +361,6 @@ for container_id in \$all_container_ids; do
   if [ "\$ssh_ready" -ne 1 ]; then
     log_remote_error "action=post_check_failed reason=ssh_unavailable container=\$container_name container_id=\$container_id"
     exit 1
-  fi
-
-  if ! printf '%s\n' "\$container_image" | grep -Eq '^(decs|dguailab/decs)(:|$)'; then
-    log_remote "action=gpu_check_skip reason=non_gpu_image container=\$container_name container_id=\$container_id image=\$container_image"
-    log_remote "action=post_check_passed container=\$container_name container_id=\$container_id gpu_check=skipped"
-    continue
   fi
 
   gpu_deadline=\$((\$(date +%s) + ${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS}))
@@ -376,6 +402,10 @@ if is_truthy "${MONITOR_MODE}"; then
   declare -a failed_servers=()
   declare -a passed_servers=()
   monitor_deadline=$((SECONDS + REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS))
+  local_output=""
+  failure_detail=""
+
+  log_event "CONTAINER" "stage=container_monitor action=begin servers=\"$*\" timeout_seconds=${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS}"
 
   for server_id in "$@"; do
     remaining_time=$((monitor_deadline - SECONDS))
@@ -388,22 +418,36 @@ if is_truthy "${MONITOR_MODE}"; then
     server_number="$(validate_server_number "${server_number}")" || exit 1
     host_alias="$(compose_ansible_host_alias "${domain_name}" "${server_number}")"
     ensure_ansible_host_exists "${host_alias}" || exit 1
+    log_event "CONTAINER" "stage=container_monitor server=${server_id} action=start host=${host_alias} remaining_time=${remaining_time}"
 
-    if restart_remote_containers "${server_id}" "${host_alias}" "${remaining_time}"; then
+    if local_output="$(restart_remote_containers "${server_id}" "${host_alias}" "${remaining_time}" 2>&1)"; then
+      [[ -n "${local_output}" ]] && printf '%s\n' "${local_output}"
       passed_servers+=("${server_id}")
       clear_failure_alerts_matching "server=${server_id} stage=container_monitor"
+      log_event "CONTAINER" "stage=container_monitor server=${server_id} action=passed host=${host_alias}"
     else
+      [[ -n "${local_output}" ]] && printf '%s\n' "${local_output}" >&2
       failed_servers+=("${server_id}")
-      notify_failure "server=${server_id} stage=container_monitor reason=container_health_check_failed"
+      failure_detail="$(extract_container_failure_detail "${local_output}" || true)"
+      if [[ -n "${failure_detail}" ]]; then
+        log_error "stage=container_monitor server=${server_id} host=${host_alias} ${failure_detail}"
+      else
+        log_error "stage=container_monitor server=${server_id} host=${host_alias} reason=container_health_check_failed"
+      fi
+      if [[ -n "${failure_detail}" ]]; then
+        notify_failure "server=${server_id} stage=container_monitor ${failure_detail}"
+      else
+        notify_failure "server=${server_id} stage=container_monitor reason=container_health_check_failed"
+      fi
     fi
   done
 
   if [[ ${#failed_servers[@]} -gt 0 ]]; then
-    log_error "monitor_failed failed_servers=\"${failed_servers[*]}\""
+    log_error "stage=container_monitor action=failed failed_servers=\"${failed_servers[*]}\""
     exit 1
   fi
 
-  log_event "CONTAINER" "action=monitor_complete servers=\"${passed_servers[*]}\""
+  log_event "CONTAINER" "stage=container_monitor action=complete servers=\"${passed_servers[*]}\""
   exit 0
 fi
 
