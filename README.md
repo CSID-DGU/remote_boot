@@ -9,13 +9,16 @@ Wake-on-LAN targets can be sent automatically whenever this desktop boots.
 - `script/run_remote_boot.sh`: boot entrypoint that loads config and runs the target script
 - `script/create_test_container.sh`: create a temporary GPU container without touching the DB
 - `script/delete_test_container.sh`: remove the temporary test container
-- `script/check_server_boot_health.sh`: verify mount, GPU, container create, SSH service, and container GPU
+- `script/check_server_boot_health.sh`: verify mount, GPU, and docker/container readiness; supports a host-only monitor mode
 - `script/wait_for_priority_servers.sh`: retry health checks until timeout before waking the rest
-- `script/restart_all_remote_containers.sh`: start stopped containers on selected servers with retry, then run per-container SSH/GPU post-checks
+- `script/restart_all_remote_containers.sh`: start stopped containers on selected servers with retry, then run per-container SSH/GPU post-checks; supports a limited monitor mode
+- `script/run_remote_boot_monitor.sh`: periodically run host health checks and limited container self-heal checks against selected servers
 - `script/integration_smoke_test.sh`: manual ansible/docker/GPU smoke test before enabling boot automation
 - `script/dry_run_remote_boot.sh`: dry-run wrapper for wake, health, container, and full-flow simulations
 - `script/test_slack_notification.sh`: send a real Slack test message using local config
+- `script/reset_remote_boot_alert_state.sh`: clear stored alert suppression state so the same failure can notify again
 - `script/install_remote_boot_service.sh`: installs and enables the systemd boot service
+- `script/install_remote_boot_monitor_timer.sh`: installs and enables the 15-minute systemd monitor timer
 - `config/remote_boot.local.env`: local defaults used at boot time
 
 ## Quick start
@@ -57,6 +60,40 @@ journalctl -u remote-boot.service -b
 tail -f /var/log/remote-boot.log
 ```
 
+Periodic monitor timer:
+
+```bash
+# Install and enable the 15-minute monitor timer
+./script/install_remote_boot_monitor_timer.sh
+
+# Install and start the service immediately once, then keep the timer active
+./script/install_remote_boot_monitor_timer.sh --start-now
+
+# Check timer/service status
+systemctl status remote-boot-monitor.timer
+systemctl status remote-boot-monitor.service
+
+# Read logs
+journalctl -u remote-boot-monitor.service -n 100
+tail -f /var/log/remote-boot-monitor.log
+```
+
+The periodic monitor keeps its scope limited:
+
+- it does not send WOL packets
+- it does not create the temporary test container
+- it does not run remount/reload/restart recovery actions on the host
+- it starts containers that are in a stopped state
+- it may run `service ssh start` inside containers when SSH is down
+- it does not restart containers or restart the Docker daemon
+- it checks mount, host GPU, docker daemon reachability, container SSH, and GPU availability for `decs` containers
+
+Alert suppression:
+
+- the same failure alert is sent only once while its alert-state file exists
+- when the matching check later succeeds, the alert state is cleared automatically
+- you can also clear alert state manually with `./script/reset_remote_boot_alert_state.sh`
+
 ## Manual usage
 
 List available targets:
@@ -92,6 +129,26 @@ Recommended manual integration test:
 
 ```bash
 ./script/integration_smoke_test.sh --scope priority
+```
+
+Manual periodic monitor run:
+
+```bash
+./script/run_remote_boot_monitor.sh
+./script/run_remote_boot_monitor.sh FARM1 LAB1
+./script/run_remote_boot_monitor.sh --dry-run
+```
+
+In monitor mode, host checks are limited to mount, host GPU, and docker daemon availability.
+Container checks start stopped containers, verify SSH for every container, try `service ssh start` when needed, and verify GPU only for `decs` / `dguailab/decs` containers.
+
+Manual alert-state reset:
+
+```bash
+./script/reset_remote_boot_alert_state.sh --all
+./script/reset_remote_boot_alert_state.sh --server-id FARM1
+./script/reset_remote_boot_alert_state.sh --server-id FARM1 --stage container_monitor
+./script/reset_remote_boot_alert_state.sh --server-id LAB1 --stage mount_check
 ```
 
 Dry-run entrypoints:
@@ -137,7 +194,9 @@ Dry-run behavior:
 - Temporary test container for health checks:
   `REMOTE_BOOT_TEST_*`
 - Logging / alerts:
-  `REMOTE_BOOT_ENABLE_HEALTH_LOGGING`, log paths, rotate count
+  `REMOTE_BOOT_ENABLE_HEALTH_LOGGING`, log paths, alert state paths, rotate count
+- Periodic health monitor:
+  `REMOTE_BOOT_MONITOR_TARGETS`, `REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK`, `REMOTE_BOOT_MONITOR_ENABLE_CONTAINER_CHECK`, `REMOTE_BOOT_MONITOR_ON_CALENDAR`, `REMOTE_BOOT_MONITOR_LOG_*`
 
 Most commonly changed options:
 
@@ -151,12 +210,18 @@ Most commonly changed options:
   whether the remaining servers also run host health checks after they wake
 - `REMOTE_BOOT_ENABLE_CONTAINER_RESTART`:
   whether stopped containers are started after boot and all containers are post-checked
+- `REMOTE_BOOT_MONITOR_TARGETS`:
+  which already running servers are checked by the 15-minute timer
+- `REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK`, `REMOTE_BOOT_MONITOR_ENABLE_CONTAINER_CHECK`:
+  whether the periodic timer runs host checks, container checks, or both
 - `REMOTE_BOOT_TEST_IMAGE_REPOSITORY`, `REMOTE_BOOT_TEST_IMAGE`, `REMOTE_BOOT_TEST_VERSION`:
   the temporary health-check container image
 - `REMOTE_BOOT_FARM_TARGETS`, `REMOTE_BOOT_LAB_TARGETS`, `REMOTE_BOOT_MAC_<TARGET>`:
   what exists in each group and how to wake it
 - `REMOTE_BOOT_SLACK_ENABLED`, `REMOTE_BOOT_SLACK_WEBHOOK_URL`, `REMOTE_BOOT_SLACK_WEBHOOK_URL_FARM`, `REMOTE_BOOT_SLACK_WEBHOOK_URL_LAB`:
   whether real Slack alerts are sent and whether alerts route to a generic webhook, a FARM-specific webhook, or a LAB-specific webhook
+- `REMOTE_BOOT_ALERT_STATE_DIR`:
+  where alert suppression state files are stored so the same failure is not sent repeatedly until it is cleared or auto-reset by a later success
 
 ## Slack test
 

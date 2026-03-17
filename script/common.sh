@@ -73,6 +73,70 @@ notify_failure_stub() {
   log_event "ALERT" "stub=true ${message}"
 }
 
+alert_state_dir() {
+  printf '%s\n' "${REMOTE_BOOT_ALERT_STATE_DIR:-${PROJECT_ROOT:-.}/state/alerts}"
+}
+
+ensure_alert_state_dir() {
+  mkdir -p "$(alert_state_dir)" 2>/dev/null || true
+}
+
+compute_alert_state_key() {
+  local normalized_message
+
+  normalized_message="$(flatten_command "$1")"
+  printf '%s' "${normalized_message}" | cksum | awk '{printf "%s-%s\n", $1, $2}'
+}
+
+alert_state_file_for_message() {
+  local state_dir state_key
+
+  state_dir="$(alert_state_dir)"
+  state_key="$(compute_alert_state_key "$1")"
+  printf '%s/%s.state\n' "${state_dir}" "${state_key}"
+}
+
+failure_alert_already_sent() {
+  local state_file
+
+  state_file="$(alert_state_file_for_message "$1")"
+  [[ -f "${state_file}" ]]
+}
+
+mark_failure_alert_sent() {
+  local message="$1"
+  local state_file
+
+  state_file="$(alert_state_file_for_message "${message}")"
+  ensure_alert_state_dir
+  {
+    printf 'timestamp=%s\n' "$(log_timestamp)"
+    printf 'message=%s\n' "$(flatten_command "${message}")"
+  } >"${state_file}" 2>/dev/null || true
+}
+
+clear_failure_alerts_matching() {
+  local match_text="$1"
+  local state_dir stored_message state_file
+  local -a state_files=()
+
+  state_dir="$(alert_state_dir)"
+  [[ -n "${match_text}" ]] || return 0
+  [[ -d "${state_dir}" ]] || return 0
+
+  shopt -s nullglob
+  state_files=("${state_dir}"/*.state)
+  shopt -u nullglob
+
+  for state_file in "${state_files[@]}"; do
+    stored_message="$(sed -n 's/^message=//p' "${state_file}" | head -n 1)"
+    if [[ "${stored_message}" == *"${match_text}"* ]]; then
+      rm -f "${state_file}" 2>/dev/null || true
+      log_event "ALERT" "reset=true match=\"${match_text}\" file=$(basename "${state_file}")"
+    fi
+  done
+}
+
 slack_notifications_enabled() {
   is_truthy "${REMOTE_BOOT_SLACK_ENABLED:-false}" &&
     [[ -n "${REMOTE_BOOT_SLACK_WEBHOOK_URL:-}${REMOTE_BOOT_SLACK_WEBHOOK_URL_FARM:-}${REMOTE_BOOT_SLACK_WEBHOOK_URL_LAB:-}" ]]
@@ -393,11 +457,18 @@ send_slack_message() {
 notify_failure() {
   local message="$*"
 
+  if failure_alert_already_sent "${message}"; then
+    log_event "ALERT" "suppressed=true ${message}"
+    return 0
+  fi
+
   if send_slack_message "${message}"; then
+    mark_failure_alert_sent "${message}"
     return 0
   fi
 
   notify_failure_stub "${message}"
+  mark_failure_alert_sent "${message}"
 }
 
 load_remote_boot_runtime() {
