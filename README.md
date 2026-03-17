@@ -11,7 +11,7 @@ Wake-on-LAN targets can be sent automatically whenever this desktop boots.
 - `script/delete_test_container.sh`: remove the temporary test container
 - `script/check_server_boot_health.sh`: verify mount, GPU, container create, SSH service, and container GPU
 - `script/wait_for_priority_servers.sh`: retry health checks until timeout before waking the rest
-- `script/restart_all_remote_containers.sh`: run `docker restart $(docker ps -aq)` on selected servers with retry
+- `script/restart_all_remote_containers.sh`: start stopped containers on selected servers with retry, then run per-container SSH/GPU post-checks
 - `script/integration_smoke_test.sh`: manual ansible/docker/GPU smoke test before enabling boot automation
 - `script/dry_run_remote_boot.sh`: dry-run wrapper for wake, health, container, and full-flow simulations
 - `script/test_slack_notification.sh`: send a real Slack test message using local config
@@ -77,7 +77,8 @@ Boot orchestration with staged wake-up:
 - `REMOTE_BOOT_ENABLE_GATE=true` waits for priority servers to pass health checks
 - the gate retries for up to `REMOTE_BOOT_GATE_TIMEOUT_SECONDS=360`
 - once the gate passes, the remaining selected targets are sent
-- finally, if `REMOTE_BOOT_ENABLE_CONTAINER_RESTART=true`, all selected servers run a full docker container restart, then each restarted container is checked for `ssh` and `nvidia-smi`
+- if `REMOTE_BOOT_ENABLE_REMAINING_HEALTH_CHECK=true`, the remaining selected targets also run the same host health checks after wake-up
+- finally, if `REMOTE_BOOT_ENABLE_CONTAINER_RESTART=true`, all selected servers start stopped containers only, then each container is checked for `ssh` and `nvidia-smi`
 - when a recovery path still cannot fix the issue, the system tries to send a Slack webhook alert and falls back to a stub alert log if Slack is disabled or delivery fails
 
 Standalone test container commands:
@@ -102,7 +103,7 @@ Dry-run entrypoints:
 # 2. Host mount/GPU check plus test-container plan
 ./script/dry_run_remote_boot.sh health FARM1
 
-# 3. Restart-all-containers flow and per-container SSH/GPU plan
+# 3. Start-stopped-containers flow and per-container SSH/GPU plan
 ./script/dry_run_remote_boot.sh containers FARM1
 
 # 4. Full orchestration
@@ -114,7 +115,7 @@ Dry-run behavior:
 
 - `wake` and `full` do not send WOL packets, sleep, create containers, restart Docker, or restart containers.
 - `health` validates config and inventory, then prints the exact host checks, test-container create/delete commands, and automatic recovery commands that would be used.
-- `containers` does not restart anything, but it does read the current remote container inventory so it can show which containers would receive SSH checks and which ones would receive GPU checks.
+- `containers` does not start or restart anything, but it does read the current remote container inventory so it can show which stopped containers would be started and which containers would receive SSH/GPU checks.
 - For actual verification after a host is already up, use `./script/check_server_boot_health.sh --server-id FARM1` and `./script/restart_all_remote_containers.sh FARM1`.
 
 ## Config guide
@@ -124,8 +125,8 @@ Dry-run behavior:
 - Remote boot target groups:
   `REMOTE_BOOT_FARM_TARGETS`, `REMOTE_BOOT_LAB_TARGETS`, `REMOTE_BOOT_TARGETS`
 - Boot order and gate behavior:
-  `REMOTE_BOOT_PRIORITY_TARGETS`, `REMOTE_BOOT_ENABLE_GATE`, `REMOTE_BOOT_GATE_*`, `REMOTE_BOOT_SECONDARY_DELAY_SECONDS`
-- Post-boot container restart flow:
+  `REMOTE_BOOT_PRIORITY_TARGETS`, `REMOTE_BOOT_ENABLE_GATE`, `REMOTE_BOOT_GATE_*`, `REMOTE_BOOT_ENABLE_REMAINING_HEALTH_CHECK`, `REMOTE_BOOT_SECONDARY_DELAY_SECONDS`
+- Post-boot container start/post-check flow:
   `REMOTE_BOOT_ENABLE_CONTAINER_RESTART`, `REMOTE_BOOT_CONTAINER_RESTART_*`, `REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_*`
 - Ansible / network:
   `REMOTE_BOOT_ANSIBLE_INVENTORY`, broadcast IPs
@@ -146,8 +147,10 @@ Most commonly changed options:
   first servers to wake and verify
 - `REMOTE_BOOT_ENABLE_GATE`:
   whether the remaining servers wait for priority health checks
+- `REMOTE_BOOT_ENABLE_REMAINING_HEALTH_CHECK`:
+  whether the remaining servers also run host health checks after they wake
 - `REMOTE_BOOT_ENABLE_CONTAINER_RESTART`:
-  whether all containers are restarted after boot
+  whether stopped containers are started after boot and all containers are post-checked
 - `REMOTE_BOOT_TEST_IMAGE_REPOSITORY`, `REMOTE_BOOT_TEST_IMAGE`, `REMOTE_BOOT_TEST_VERSION`:
   the temporary health-check container image
 - `REMOTE_BOOT_FARM_TARGETS`, `REMOTE_BOOT_LAB_TARGETS`, `REMOTE_BOOT_MAC_<TARGET>`:
@@ -219,6 +222,6 @@ Log format:
 - unrecovered failures are written to `REMOTE_BOOT_ALERT_STUB_LOG_FILE` when Slack is disabled or Slack delivery fails.
 - test container share mounts can use `REMOTE_BOOT_TEST_SHARE_SOURCE_TEMPLATE="/home/tako%s/share/user-share/"`; `%s` is replaced with the server number, so `FARM1` and `LAB1` both use `/home/tako1/share/user-share/`.
 - test container GPU launch uses `REMOTE_BOOT_TEST_DOCKER_RUNTIME="auto"` by default, so hosts without a registered `nvidia` runtime still run with `--gpus`.
-- container restart uses `docker ps -aq`; after restart, each container is checked for SSH, but GPU checks run only for containers whose image is `decs` or `dguailab/decs` with any tag. CPU-only containers are logged as skipped.
+- post-boot container handling starts only containers that are in a stopped state; after that, each container is checked for SSH, but GPU checks run only for containers whose image is `decs` or `dguailab/decs` with any tag. CPU-only containers are logged as skipped.
 - post-restart per-container checks use `REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS` and `REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS`.
 - If the network is not ready at boot, increase `REMOTE_BOOT_PRE_DELAY_SECONDS`.

@@ -19,9 +19,9 @@ Usage: $0 [options] SERVER_ID [SERVER_ID ...]
 
 Options:
   --config PATH           config file path (default: ${CONFIG_FILE})
-  --timeout-seconds N     overall timeout for restart completion
+  --timeout-seconds N     overall timeout for start/post-check completion
   --poll-seconds N        retry interval between attempts
-  --dry-run               inspect container inventory and print the restart plan only
+  --dry-run               inspect container inventory and print the start/post-check plan only
   -h, --help              show this help
 EOF
 }
@@ -112,7 +112,7 @@ dry_run_restart_plan() {
   local container_id container_name container_status container_image
 
   log_dry_run "server=${server_id} action=restart_plan host=${host_alias} overall_timeout_seconds=${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS} retry_poll_seconds=${REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS}"
-  log_dry_run "server=${server_id} action=remote_command host=${host_alias} command=\"docker restart \$(docker ps -aq)\""
+  log_dry_run "server=${server_id} action=remote_command host=${host_alias} command=\"docker start <stopped_containers>\""
   log_dry_run "server=${server_id} action=recovery_plan host=${host_alias} recovery=\"sudo -n systemctl restart docker || sudo -n service docker restart\""
 
   inventory_output="$(run_remote_shell_capture "${host_alias}" "docker ps -a --format '{% raw %}{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}{% endraw %}'")" || return 1
@@ -129,6 +129,9 @@ dry_run_restart_plan() {
     fi
 
     log_dry_run "server=${server_id} action=container_plan host=${host_alias} container=${container_name} container_id=${container_id} status=\"${container_status}\" image=${container_image}"
+    if ! printf '%s\n' "${container_status}" | grep -Eq '^(Up|Restarting)\b'; then
+      log_dry_run "server=${server_id} action=start_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker start '${container_id}'\""
+    fi
     log_dry_run "server=${server_id} action=ssh_check_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker exec '${container_id}' sh -lc \\\"service ssh status >/dev/null 2>&1 || { [ -x /etc/init.d/ssh ] && /etc/init.d/ssh status >/dev/null 2>&1; } || ps -ef | grep '[s]shd' >/dev/null\\\"\""
     log_dry_run "server=${server_id} action=ssh_recovery_plan host=${host_alias} container=${container_name} container_id=${container_id} command=\"docker exec '${container_id}' sh -lc \\\"service ssh start >/dev/null 2>&1 || { [ -x /etc/init.d/ssh ] && /etc/init.d/ssh start >/dev/null 2>&1; } || true\\\"\""
 
@@ -168,29 +171,40 @@ log_remote_error() {
   printf '%s [ERROR] server=${server_id} host=${host_alias} %s\n' "\$(date +%Y-%m-%dT%H:%M:%S%z)" "\$*" >&2
 }
 
-container_ids=\$(docker ps -aq)
-if [ -z "\$container_ids" ]; then
+all_container_ids=\$(docker ps -aq)
+if [ -z "\$all_container_ids" ]; then
   log_remote "action=restart_skip reason=no_containers"
   exit 0
 fi
 
-log_remote "action=restart_start"
-if ! docker restart \$container_ids; then
-  log_remote "action=restart_recovery_start recovery=docker_service_restart"
-  sudo -n systemctl restart docker >/dev/null 2>&1 || sudo -n service docker restart >/dev/null 2>&1 || true
-  sleep ${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS}
+stopped_container_ids=\$(docker ps -aq -f status=created -f status=exited -f status=dead)
+if [ -n "\$stopped_container_ids" ]; then
+  log_remote "action=start_stopped_start"
+  if ! docker start \$stopped_container_ids; then
+    log_remote "action=start_stopped_recovery_start recovery=docker_service_restart"
+    sudo -n systemctl restart docker >/dev/null 2>&1 || sudo -n service docker restart >/dev/null 2>&1 || true
+    sleep ${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS}
 
-  if ! docker restart \$container_ids; then
-    log_remote_error "action=restart_failed reason=docker_restart_failed_after_recovery"
-    exit 1
+    if ! docker start \$stopped_container_ids; then
+      log_remote_error "action=start_stopped_failed reason=docker_start_failed_after_recovery"
+      exit 1
+    fi
   fi
+else
+  log_remote "action=start_stopped_skip reason=no_stopped_containers"
 fi
 
-for container_id in \$container_ids; do
+for container_id in \$all_container_ids; do
   container_name=\$(docker inspect --format '{% raw %}{{.Name}}{% endraw %}' "\$container_id" 2>/dev/null | sed 's#^/##')
   container_image=\$(docker inspect --format '{% raw %}{{.Config.Image}}{% endraw %}' "\$container_id" 2>/dev/null)
+  container_running=\$(docker inspect --format '{% raw %}{{.State.Running}}{% endraw %}' "\$container_id" 2>/dev/null || true)
   if [ -z "\$container_name" ]; then
     container_name="\$container_id"
+  fi
+
+  if [ "\$container_running" != "true" ]; then
+    log_remote "action=container_start_attempt container=\$container_name container_id=\$container_id"
+    docker start "\$container_id" >/dev/null 2>&1 || true
   fi
 
   log_remote "action=post_check_start container=\$container_name container_id=\$container_id"

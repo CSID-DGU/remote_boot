@@ -102,6 +102,7 @@ REMOTE_BOOT_PRIORITY_TARGETS="${REMOTE_BOOT_PRIORITY_TARGETS:-FARM1 LAB1}"
 REMOTE_BOOT_ENABLE_GATE="${REMOTE_BOOT_ENABLE_GATE:-true}"
 REMOTE_BOOT_GATE_TIMEOUT_SECONDS="${REMOTE_BOOT_GATE_TIMEOUT_SECONDS:-360}"
 REMOTE_BOOT_GATE_POLL_SECONDS="${REMOTE_BOOT_GATE_POLL_SECONDS:-20}"
+REMOTE_BOOT_ENABLE_REMAINING_HEALTH_CHECK="${REMOTE_BOOT_ENABLE_REMAINING_HEALTH_CHECK:-true}"
 REMOTE_BOOT_SECONDARY_DELAY_SECONDS="${REMOTE_BOOT_SECONDARY_DELAY_SECONDS:-0}"
 REMOTE_BOOT_ENABLE_CONTAINER_RESTART="${REMOTE_BOOT_ENABLE_CONTAINER_RESTART:-true}"
 REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS="${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS:-600}"
@@ -240,6 +241,26 @@ if [[ ${#remaining_targets[@]} -gt 0 ]]; then
   if ! "${WAKE_SCRIPT}" "${wake_args[@]}" "${remaining_targets[@]}"; then
     notify_failure "stage=remaining_wake reason=wake_failed targets=\"${remaining_targets[*]}\""
     exit 1
+  fi
+
+  if is_truthy "${REMOTE_BOOT_ENABLE_REMAINING_HEALTH_CHECK}"; then
+    log_event "GATE" "stage=remaining_start targets=\"${remaining_targets[*]}\" timeout_seconds=${REMOTE_BOOT_GATE_TIMEOUT_SECONDS} poll_seconds=${REMOTE_BOOT_GATE_POLL_SECONDS}"
+    gate_args=()
+    if dry_run_enabled; then
+      gate_args+=(--dry-run)
+    fi
+    if ! "${GATE_SCRIPT}" \
+      "${gate_args[@]}" \
+      --config "${CONFIG_FILE}" \
+      --timeout-seconds "${REMOTE_BOOT_GATE_TIMEOUT_SECONDS}" \
+      --poll-seconds "${REMOTE_BOOT_GATE_POLL_SECONDS}" \
+      "${remaining_targets[@]}"; then
+      notify_failure "stage=remaining_gate reason=health_check_failed targets=\"${remaining_targets[*]}\""
+      exit 1
+    fi
+    log_event "GATE" "stage=remaining_passed targets=\"${remaining_targets[*]}\""
+  else
+    log_event "GATE" "stage=remaining_skipped reason=remaining_health_check_disabled targets=\"${remaining_targets[*]}\""
   fi
 elif is_truthy "${REMOTE_BOOT_ENABLE_GATE}" && [[ ${#priority_targets[@]} -gt 0 ]]; then
   log_event "GATE" "stage=skipped reason=no_remaining_targets targets=\"${priority_targets[*]}\""
