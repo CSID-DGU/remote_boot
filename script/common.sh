@@ -79,7 +79,7 @@ slack_notifications_enabled() {
 }
 
 json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  printf '%s' "$1" | sed ':a;N;$!ba;s/\\/\\\\/g;s/"/\\"/g;s/\r/\\r/g;s/\t/\\t/g;s/\n/\\n/g'
 }
 
 append_unique_string() {
@@ -189,6 +189,150 @@ collect_slack_webhook_urls() {
   printf '%s\n' "${UNIQUE_STRINGS[@]:-}"
 }
 
+extract_message_value() {
+  local message="$1"
+  local key="$2"
+  local value
+
+  value="$(printf '%s\n' "${message}" | sed -n "s/.*${key}=\"\\([^\"]*\\)\".*/\\1/p" | head -n 1)"
+  if [[ -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+
+  value="$(printf '%s\n' "${message}" | sed -n "s/.*${key}=\\([^[:space:]]*\\).*/\\1/p" | head -n 1)"
+  if [[ -n "${value}" ]]; then
+    printf '%s\n' "${value}"
+    return 0
+  fi
+
+  return 1
+}
+
+format_slack_route_label() {
+  local message="$1"
+  local route_hint="${2:-}"
+  local route_domain
+  local joined_routes
+
+  UNIQUE_STRINGS=()
+
+  if route_domain="$(detect_route_domain_from_hint "${route_hint}" 2>/dev/null)"; then
+    append_unique_string "${route_domain}"
+  else
+    while read -r route_domain; do
+      [[ -n "${route_domain}" ]] || continue
+      append_unique_string "${route_domain}"
+    done < <(detect_route_domains_from_message "${message}")
+  fi
+
+  if [[ ${#UNIQUE_STRINGS[@]} -eq 0 ]]; then
+    printf '%s\n' "COMMON"
+    return 0
+  fi
+
+  local IFS=', '
+  joined_routes="${UNIQUE_STRINGS[*]}"
+  printf '%s\n' "${joined_routes}"
+}
+
+format_slack_stage_label() {
+  case "$1" in
+    priority_wake) printf '%s\n' "우선 서버 WOL 전송" ;;
+    priority_gate) printf '%s\n' "우선 서버 호스트 점검" ;;
+    remaining_wake) printf '%s\n' "나머지 서버 WOL 전송" ;;
+    remaining_gate) printf '%s\n' "나머지 서버 호스트 점검" ;;
+    restart_all_remote_containers) printf '%s\n' "컨테이너 기동 및 점검" ;;
+    mount_check) printf '%s\n' "NFS 마운트 점검" ;;
+    host_gpu_check) printf '%s\n' "호스트 GPU 점검" ;;
+    create_test_container) printf '%s\n' "테스트 컨테이너 생성" ;;
+    container_ssh_check) printf '%s\n' "테스트 컨테이너 SSH 점검" ;;
+    container_gpu_check) printf '%s\n' "테스트 컨테이너 GPU 점검" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+format_slack_reason_label() {
+  case "$1" in
+    wake_failed) printf '%s\n' "WOL 전송 실패" ;;
+    health_check_failed) printf '%s\n' "호스트 점검 실패" ;;
+    restart_or_postcheck_failed) printf '%s\n' "컨테이너 기동 또는 점검 실패" ;;
+    timeout) printf '%s\n' "제한 시간 초과" ;;
+    mount_check_failed) printf '%s\n' "NFS 마운트 확인 실패" ;;
+    host_gpu_check_failed) printf '%s\n' "호스트 GPU 확인 실패" ;;
+    create_test_container_failed) printf '%s\n' "테스트 컨테이너 생성 실패" ;;
+    container_ssh_check_failed) printf '%s\n' "테스트 컨테이너 SSH 확인 실패" ;;
+    container_gpu_check_failed) printf '%s\n' "테스트 컨테이너 GPU 확인 실패" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+build_slack_message() {
+  local message="$1"
+  local route_hint="${2:-}"
+  local message_prefix="${3:-[remote_boot]}"
+  local route_label server_value targets_value pending_value stage_value reason_value host_value time_value test_value
+  local stage_label reason_label detail_value title
+  local formatted_message=""
+  local log_file_label="${REMOTE_BOOT_LOG_FILE:-/var/log/remote-boot.log}"
+
+  route_label="$(format_slack_route_label "${message}" "${route_hint}")"
+  server_value="$(extract_message_value "${message}" "server" 2>/dev/null || true)"
+  targets_value="$(extract_message_value "${message}" "targets" 2>/dev/null || true)"
+  pending_value="$(extract_message_value "${message}" "pending" 2>/dev/null || true)"
+  stage_value="$(extract_message_value "${message}" "stage" 2>/dev/null || true)"
+  reason_value="$(extract_message_value "${message}" "reason" 2>/dev/null || true)"
+  host_value="$(extract_message_value "${message}" "host" 2>/dev/null || true)"
+  time_value="$(extract_message_value "${message}" "time" 2>/dev/null || true)"
+  test_value="$(extract_message_value "${message}" "test_message" 2>/dev/null || true)"
+
+  if [[ -n "${test_value}" ]]; then
+    title=":bell: *${message_prefix} Slack 알림 테스트*"
+  else
+    title=":rotating_light: *${message_prefix} 서버 원격 부팅/점검 오류*"
+  fi
+
+  formatted_message="${title}"
+  formatted_message+=$'\n'"▶ *범위*: ${route_label}"
+
+  if [[ -n "${server_value}" ]]; then
+    formatted_message+=$'\n'"▶ *서버*: ${server_value}"
+  elif [[ -n "${targets_value}" ]]; then
+    formatted_message+=$'\n'"▶ *대상*: ${targets_value}"
+  elif [[ -n "${pending_value}" ]]; then
+    formatted_message+=$'\n'"▶ *대기 대상*: ${pending_value}"
+  fi
+
+  if [[ -n "${host_value}" ]]; then
+    formatted_message+=$'\n'"▶ *호스트*: ${host_value}"
+  fi
+
+  if [[ -n "${time_value}" ]]; then
+    formatted_message+=$'\n'"▶ *시각*: ${time_value}"
+  fi
+
+  if [[ -n "${stage_value}" ]]; then
+    stage_label="$(format_slack_stage_label "${stage_value}")"
+    formatted_message+=$'\n'"▶ *단계*: ${stage_label}"
+  fi
+
+  if [[ -n "${reason_value}" ]]; then
+    reason_label="$(format_slack_reason_label "${reason_value}")"
+    formatted_message+=$'\n'"▶ *원인*: ${reason_label}"
+  fi
+
+  if [[ -z "${test_value}" ]]; then
+    formatted_message+=$'\n'"▶ *로그*: \`${log_file_label}\`"
+  fi
+
+  detail_value="$(flatten_command "${message}")"
+  formatted_message+=$'\n'"```"
+  formatted_message+=$'\n'"${detail_value}"
+  formatted_message+=$'\n'"```"
+
+  printf '%s\n' "${formatted_message}"
+}
+
 send_slack_message() {
   local message="$1"
   local route_hint="${2:-}"
@@ -212,11 +356,10 @@ send_slack_message() {
 
   require_command "curl" "Install curl to enable Slack notifications." || return 1
 
-  formatted_message="${message}"
-  if [[ -n "${message_prefix}" ]]; then
-    formatted_message="${message_prefix} ${message}"
-  fi
-  payload="$(printf '{"text":"%s"}' "$(json_escape "${formatted_message}")")"
+  formatted_message="$(build_slack_message "${message}" "${route_hint}" "${message_prefix}")"
+  payload="$(printf '{"text":"%s","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"%s"}}]}' \
+    "$(json_escape "${formatted_message}")" \
+    "$(json_escape "${formatted_message}")")"
 
   while read -r webhook_url; do
     [[ -n "${webhook_url}" ]] || continue
