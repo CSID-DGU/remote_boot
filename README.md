@@ -152,8 +152,8 @@ Most commonly changed options:
   the temporary health-check container image
 - `REMOTE_BOOT_FARM_TARGETS`, `REMOTE_BOOT_LAB_TARGETS`, `REMOTE_BOOT_MAC_<TARGET>`:
   what exists in each group and how to wake it
-- `REMOTE_BOOT_SLACK_ENABLED`, `REMOTE_BOOT_SLACK_WEBHOOK_URL`:
-  whether real Slack alerts are sent and which webhook receives them
+- `REMOTE_BOOT_SLACK_ENABLED`, `REMOTE_BOOT_SLACK_WEBHOOK_URL`, `REMOTE_BOOT_SLACK_WEBHOOK_URL_FARM`, `REMOTE_BOOT_SLACK_WEBHOOK_URL_LAB`:
+  whether real Slack alerts are sent and whether alerts route to a generic webhook, a FARM-specific webhook, or a LAB-specific webhook
 
 ## Slack test
 
@@ -161,22 +161,27 @@ Most commonly changed options:
 
 ```bash
 REMOTE_BOOT_SLACK_ENABLED=true
-REMOTE_BOOT_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+REMOTE_BOOT_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."        # optional fallback
+REMOTE_BOOT_SLACK_WEBHOOK_URL_FARM="https://hooks.slack.com/services/..."   # FARM alerts
+REMOTE_BOOT_SLACK_WEBHOOK_URL_LAB="https://hooks.slack.com/services/..."    # LAB alerts
 ```
 
 2. Send a test message:
 
 ```bash
 ./script/test_slack_notification.sh
+./script/test_slack_notification.sh --server-id FARM1
+./script/test_slack_notification.sh --server-id LAB1
 ```
 
 You can also override the message text:
 
 ```bash
-./script/test_slack_notification.sh --message "remote_boot slack test"
+./script/test_slack_notification.sh --server-id FARM1 --message "remote_boot slack test (farm)"
+./script/test_slack_notification.sh --server-id LAB1 --message "remote_boot slack test (lab)"
 ```
 
-If Slack is configured, real alert paths now try Slack first and fall back to `REMOTE_BOOT_ALERT_STUB_LOG_FILE` if delivery fails.
+If Slack is configured, alerts containing `FARM*` server IDs go to `REMOTE_BOOT_SLACK_WEBHOOK_URL_FARM`, alerts containing `LAB*` server IDs go to `REMOTE_BOOT_SLACK_WEBHOOK_URL_LAB`, mixed alerts are sent to both when both are configured, and `REMOTE_BOOT_SLACK_WEBHOOK_URL` acts as a fallback.
 
 Manual health-check logs:
 

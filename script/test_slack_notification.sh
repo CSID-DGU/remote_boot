@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
 MESSAGE_OVERRIDE=""
+SERVER_ID_OVERRIDE=""
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
@@ -17,6 +18,7 @@ Usage: $0 [options]
 
 Options:
   --config PATH       config file path (default: ${CONFIG_FILE})
+  --server-id ID      route the test message as a server-specific alert (for example: FARM1, LAB1)
   --message TEXT      override the Slack test message
   -h, --help          show this help
 EOF
@@ -30,6 +32,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       CONFIG_FILE="$2"
+      shift 2
+      ;;
+    --server-id)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --server-id requires a value." >&2
+        exit 1
+      fi
+      SERVER_ID_OVERRIDE="$2"
       shift 2
       ;;
     --message)
@@ -61,13 +71,17 @@ fi
 
 if ! slack_notifications_enabled; then
   echo "Error: Slack is not fully configured." >&2
-  echo "Set REMOTE_BOOT_SLACK_ENABLED=true and REMOTE_BOOT_SLACK_WEBHOOK_URL in ${CONFIG_FILE}." >&2
+  echo "Set REMOTE_BOOT_SLACK_ENABLED=true and at least one Slack webhook URL in ${CONFIG_FILE}." >&2
   exit 1
 fi
 
-test_message="${MESSAGE_OVERRIDE:-test_message=remote_boot_slack_ok host=$(hostname) time=$(log_timestamp)}"
+if [[ -n "${SERVER_ID_OVERRIDE}" ]]; then
+  test_message="${MESSAGE_OVERRIDE:-test_message=remote_boot_slack_ok server=${SERVER_ID_OVERRIDE} host=$(hostname) time=$(log_timestamp)}"
+else
+  test_message="${MESSAGE_OVERRIDE:-test_message=remote_boot_slack_ok host=$(hostname) time=$(log_timestamp)}"
+fi
 
-if send_slack_message "${test_message}"; then
+if send_slack_message "${test_message}" "${SERVER_ID_OVERRIDE}"; then
   echo "Slack test message sent successfully."
 else
   echo "Slack test message failed." >&2

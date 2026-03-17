@@ -75,24 +75,133 @@ notify_failure_stub() {
 
 slack_notifications_enabled() {
   is_truthy "${REMOTE_BOOT_SLACK_ENABLED:-false}" &&
-    [[ -n "${REMOTE_BOOT_SLACK_WEBHOOK_URL:-}" ]]
+    [[ -n "${REMOTE_BOOT_SLACK_WEBHOOK_URL:-}${REMOTE_BOOT_SLACK_WEBHOOK_URL_FARM:-}${REMOTE_BOOT_SLACK_WEBHOOK_URL_LAB:-}" ]]
 }
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+append_unique_string() {
+  local candidate="$1"
+  local existing
+
+  [[ -n "${candidate}" ]] || return 0
+
+  for existing in "${UNIQUE_STRINGS[@]:-}"; do
+    if [[ "${existing}" == "${candidate}" ]]; then
+      return 0
+    fi
+  done
+
+  UNIQUE_STRINGS+=("${candidate}")
+}
+
+normalize_slack_route_domain() {
+  local raw_value="$1"
+  local normalized_value
+
+  normalized_value="$(printf '%s' "${raw_value}" | tr '[:lower:]' '[:upper:]')"
+  case "${normalized_value}" in
+    FARM|LAB)
+      printf '%s\n' "${normalized_value}"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+detect_route_domain_from_hint() {
+  local route_hint="$1"
+  local domain_name server_number
+
+  if [[ -z "${route_hint}" ]]; then
+    return 1
+  fi
+
+  if normalize_slack_route_domain "${route_hint}" >/dev/null 2>&1; then
+    normalize_slack_route_domain "${route_hint}"
+    return 0
+  fi
+
+  if read -r domain_name server_number <<<"$(split_server_id "${route_hint}" 2>/dev/null)"; then
+    printf '%s\n' "${domain_name}"
+    return 0
+  fi
+
+  return 1
+}
+
+detect_route_domains_from_message() {
+  local message="$1"
+  local server_id domain_name server_number
+
+  UNIQUE_STRINGS=()
+
+  while read -r server_id; do
+    [[ -n "${server_id}" ]] || continue
+    if read -r domain_name server_number <<<"$(split_server_id "${server_id}" 2>/dev/null)"; then
+      append_unique_string "${domain_name}"
+    fi
+  done < <(printf '%s\n' "${message}" | grep -oE '(FARM|LAB)[0-9]+' || true)
+
+  printf '%s\n' "${UNIQUE_STRINGS[@]:-}"
+}
+
+collect_slack_webhook_urls() {
+  local message="$1"
+  local route_hint="${2:-}"
+  local generic_webhook="${REMOTE_BOOT_SLACK_WEBHOOK_URL:-}"
+  local farm_webhook="${REMOTE_BOOT_SLACK_WEBHOOK_URL_FARM:-}"
+  local lab_webhook="${REMOTE_BOOT_SLACK_WEBHOOK_URL_LAB:-}"
+  local route_domain
+
+  UNIQUE_STRINGS=()
+
+  if route_domain="$(detect_route_domain_from_hint "${route_hint}" 2>/dev/null)"; then
+    case "${route_domain}" in
+      FARM)
+        append_unique_string "${farm_webhook:-${generic_webhook}}"
+        ;;
+      LAB)
+        append_unique_string "${lab_webhook:-${generic_webhook}}"
+        ;;
+    esac
+  else
+    while read -r route_domain; do
+      [[ -n "${route_domain}" ]] || continue
+      case "${route_domain}" in
+        FARM)
+          append_unique_string "${farm_webhook:-${generic_webhook}}"
+          ;;
+        LAB)
+          append_unique_string "${lab_webhook:-${generic_webhook}}"
+          ;;
+      esac
+    done < <(detect_route_domains_from_message "${message}")
+  fi
+
+  if [[ ${#UNIQUE_STRINGS[@]} -eq 0 ]]; then
+    append_unique_string "${generic_webhook}"
+  fi
+
+  printf '%s\n' "${UNIQUE_STRINGS[@]:-}"
+}
+
 send_slack_message() {
   local message="$1"
-  local webhook_url="${REMOTE_BOOT_SLACK_WEBHOOK_URL:-}"
+  local route_hint="${2:-}"
   local message_prefix="${REMOTE_BOOT_SLACK_MESSAGE_PREFIX:-[remote_boot]}"
   local formatted_message
   local payload
   local response
   local flattened_response
+  local webhook_url
+  local sent_count=0
 
   if dry_run_enabled; then
-    log_dry_run "action=slack_send_skip reason=dry_run message=\"${message_prefix} ${message}\""
+    log_dry_run "action=slack_send_skip reason=dry_run route_hint=${route_hint:-auto} message=\"${message_prefix} ${message}\""
     return 0
   fi
 
@@ -109,21 +218,32 @@ send_slack_message() {
   fi
   payload="$(printf '{"text":"%s"}' "$(json_escape "${formatted_message}")")"
 
-  if ! response="$(curl -fsS -X POST "${webhook_url}" \
-    -H "Content-Type: application/json" \
-    --data "${payload}" 2>&1)"; then
-    flattened_response="$(flatten_command "${response}")"
-    log_error "action=slack_send_failed reason=curl_error response=\"${flattened_response}\""
+  while read -r webhook_url; do
+    [[ -n "${webhook_url}" ]] || continue
+
+    if ! response="$(curl -fsS -X POST "${webhook_url}" \
+      -H "Content-Type: application/json" \
+      --data "${payload}" 2>&1)"; then
+      flattened_response="$(flatten_command "${response}")"
+      log_error "action=slack_send_failed reason=curl_error route_hint=${route_hint:-auto} response=\"${flattened_response}\""
+      return 1
+    fi
+
+    if ! printf '%s' "${response}" | grep -Eq '^ok$'; then
+      flattened_response="$(flatten_command "${response}")"
+      log_error "action=slack_send_failed reason=api_error route_hint=${route_hint:-auto} response=\"${flattened_response}\""
+      return 1
+    fi
+
+    sent_count=$((sent_count + 1))
+  done < <(collect_slack_webhook_urls "${message}" "${route_hint}")
+
+  if (( sent_count == 0 )); then
+    log_warn "action=slack_send_skip reason=no_matching_webhook route_hint=${route_hint:-auto}"
     return 1
   fi
 
-  if ! printf '%s' "${response}" | grep -Eq '^ok$'; then
-    flattened_response="$(flatten_command "${response}")"
-    log_error "action=slack_send_failed reason=api_error response=\"${flattened_response}\""
-    return 1
-  fi
-
-  log_event "ALERT" "slack=true delivery=webhook"
+  log_event "ALERT" "slack=true delivery=webhook sent_count=${sent_count} route_hint=${route_hint:-auto}"
   return 0
 }
 
