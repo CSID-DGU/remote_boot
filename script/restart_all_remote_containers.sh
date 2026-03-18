@@ -7,6 +7,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
 TIMEOUT_OVERRIDE=""
 POLL_OVERRIDE=""
+LOG_FILE_OVERRIDE=""
 DRY_RUN=false
 MONITOR_MODE=false
 
@@ -22,6 +23,7 @@ Options:
   --config PATH           config file path (default: ${CONFIG_FILE})
   --timeout-seconds N     overall timeout for start/post-check completion
   --poll-seconds N        retry interval between attempts
+  --log-file PATH         append output to PATH while keeping terminal output
   --monitor-mode          run limited container checks with start/ssh recovery only
   --dry-run               inspect container inventory and print the start/post-check plan only
   -h, --help              show this help
@@ -52,6 +54,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       POLL_OVERRIDE="$2"
+      shift 2
+      ;;
+    --log-file)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --log-file requires a value." >&2
+        exit 1
+      fi
+      LOG_FILE_OVERRIDE="$2"
       shift 2
       ;;
     --monitor-mode)
@@ -93,6 +103,8 @@ REMOTE_BOOT_CONTAINER_RESTART_POLL_SECONDS="${REMOTE_BOOT_CONTAINER_RESTART_POLL
 REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS="${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_TIMEOUT_SECONDS:-60}"
 REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS="${REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_POLL_SECONDS:-5}"
 REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX="${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX:-^(decs|dguailab/decs)(:|$)}"
+REMOTE_BOOT_HEALTH_LOG_DIR="${REMOTE_BOOT_HEALTH_LOG_DIR:-${PROJECT_ROOT}/logs/health}"
+REMOTE_BOOT_ENABLE_HEALTH_LOGGING="${REMOTE_BOOT_ENABLE_HEALTH_LOGGING:-true}"
 
 if [[ -n "${TIMEOUT_OVERRIDE}" ]]; then
   REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS="${TIMEOUT_OVERRIDE}"
@@ -111,6 +123,24 @@ load_remote_boot_runtime
 
 require_ansible_cli || exit 1
 require_ansible_inventory || exit 1
+
+if [[ -n "${LOG_FILE_OVERRIDE}" ]]; then
+  CONTAINER_LOG_FILE="${LOG_FILE_OVERRIDE}"
+elif is_truthy "${REMOTE_BOOT_ENABLE_HEALTH_LOGGING}"; then
+  if is_truthy "${MONITOR_MODE}"; then
+    CONTAINER_LOG_FILE="${REMOTE_BOOT_HEALTH_LOG_DIR}/$(date +%Y%m%d_%H%M%S)_container_monitor.log"
+  else
+    CONTAINER_LOG_FILE="${REMOTE_BOOT_HEALTH_LOG_DIR}/$(date +%Y%m%d_%H%M%S)_container_postcheck.log"
+  fi
+else
+  CONTAINER_LOG_FILE=""
+fi
+
+enable_script_logging "${CONTAINER_LOG_FILE}"
+
+if [[ -n "${CONTAINER_LOG_FILE}" ]]; then
+  log_event "CONTAINER" "log_file=${CONTAINER_LOG_FILE}"
+fi
 
 is_target_container_image() {
   local container_image="$1"
@@ -233,13 +263,13 @@ log_remote_error() {
   printf '%s [ERROR] server=${server_id} host=${host_alias} stage=container_monitor %s\n' "\$(date +%Y-%m-%dT%H:%M:%S%z)" "\$*" >&2
 }
 
-target_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | cut -d'|' -f1 || true)
+target_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Image}}{% endraw %}' | awk -F'|' -v re='${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' '\$2 ~ re {print \$1}' || true)
 if [ -z "\$(printf '%s' "\$target_container_ids" | tr -d '[:space:]')" ]; then
   log_remote "action=monitor_skip reason=no_target_containers image_regex=${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}"
   exit 0
 fi
 
-stopped_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Status}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | awk -F'|' '\$2 !~ /^(Up|Restarting)/ {print \$1}' || true)
+stopped_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Status}}|{{.Image}}{% endraw %}' | awk -F'|' -v re='${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' '\$3 ~ re && \$2 !~ /^(Up|Restarting)/ {print \$1}' || true)
 if [ -n "\$(printf '%s' "\$stopped_container_ids" | tr -d '[:space:]')" ]; then
   log_remote "action=start_stopped_start"
   if ! docker start \$stopped_container_ids; then
@@ -317,13 +347,13 @@ log_remote_error() {
 }
 
 all_container_ids=\$(docker ps -aq)
-target_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | cut -d'|' -f1 || true)
+target_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Image}}{% endraw %}' | awk -F'|' -v re='${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' '\$2 ~ re {print \$1}' || true)
 if [ -z "\$(printf '%s' "\$target_container_ids" | tr -d '[:space:]')" ]; then
   log_remote "action=restart_skip reason=no_target_containers image_regex=${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}"
   exit 0
 fi
 
-stopped_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Status}}|{{.Image}}{% endraw %}' | grep -E '${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' | awk -F'|' '\$2 !~ /^(Up|Restarting)/ {print \$1}' || true)
+stopped_container_ids=\$(docker ps -a --format '{% raw %}{{.ID}}|{{.Status}}|{{.Image}}{% endraw %}' | awk -F'|' -v re='${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX}' '\$3 ~ re && \$2 !~ /^(Up|Restarting)/ {print \$1}' || true)
 if [ -n "\$(printf '%s' "\$stopped_container_ids" | tr -d '[:space:]')" ]; then
   log_remote "action=start_stopped_start"
   if ! docker start \$stopped_container_ids; then
