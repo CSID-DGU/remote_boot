@@ -88,6 +88,8 @@ REMOTE_BOOT_MONITOR_TARGETS="${REMOTE_BOOT_MONITOR_TARGETS:-all}"
 REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK="${REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK:-true}"
 REMOTE_BOOT_MONITOR_ENABLE_CONTAINER_CHECK="${REMOTE_BOOT_MONITOR_ENABLE_CONTAINER_CHECK:-true}"
 REMOTE_BOOT_MONITOR_LOG_FILE="${REMOTE_BOOT_MONITOR_LOG_FILE:-/var/log/remote-boot-monitor.log}"
+REMOTE_BOOT_HEALTH_LOG_DIR="${REMOTE_BOOT_HEALTH_LOG_DIR:-${PROJECT_ROOT}/logs/health}"
+REMOTE_BOOT_ENABLE_HEALTH_LOGGING="${REMOTE_BOOT_ENABLE_HEALTH_LOGGING:-true}"
 export REMOTE_BOOT_CURRENT_LOG_FILE="${REMOTE_BOOT_MONITOR_LOG_FILE}"
 
 CHECK_SCRIPT="${REMOTE_BOOT_HEALTH_CHECK_SCRIPT:-${SCRIPT_DIR}/check_server_boot_health.sh}"
@@ -143,11 +145,25 @@ log_event "MONITOR" "stage=start targets=\"${selected_targets[*]}\" host_health_
 for server_id in "${selected_targets[@]}"; do
   host_check_passed=true
   container_check_passed=true
+  server_log_file=""
 
   log_event "MONITOR" "stage=server_start server=${server_id}"
 
+  if is_truthy "${REMOTE_BOOT_ENABLE_HEALTH_LOGGING}"; then
+    server_log_file="${REMOTE_BOOT_HEALTH_LOG_DIR}/$(date +%Y%m%d_%H%M%S)_$(printf '%s' "${server_id}" | tr '[:upper:]' '[:lower:]').log"
+    log_event "MONITOR" "stage=server_log_file server=${server_id} log_file=${server_log_file}"
+  fi
+
   if is_truthy "${REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK}"; then
-    if "${CHECK_SCRIPT}" --config "${CONFIG_FILE}" ${REMOTE_BOOT_DRY_RUN:+--dry-run} --monitor-mode --server-id "${server_id}"; then
+    check_args=(--config "${CONFIG_FILE}" --monitor-mode --server-id "${server_id}")
+    if [[ -n "${server_log_file}" ]]; then
+      check_args+=(--log-file "${server_log_file}")
+    fi
+    if dry_run_enabled; then
+      check_args=(--dry-run "${check_args[@]}")
+    fi
+
+    if "${CHECK_SCRIPT}" "${check_args[@]}"; then
       log_event "MONITOR" "stage=host_health_passed server=${server_id}"
     else
       host_failed_servers+=("${server_id}")
@@ -162,12 +178,31 @@ for server_id in "${selected_targets[@]}"; do
     if [[ "${host_check_passed}" == "false" ]] && is_truthy "${REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK}"; then
       container_check_passed=false
       log_event "MONITOR" "stage=container_check_skipped server=${server_id} reason=host_health_failed"
-    elif "${CONTAINER_SCRIPT}" --config "${CONFIG_FILE}" ${REMOTE_BOOT_DRY_RUN:+--dry-run} --monitor-mode "${server_id}"; then
-      log_event "MONITOR" "stage=container_check_passed server=${server_id}"
     else
-      container_failed_servers+=("${server_id}")
-      container_check_passed=false
-      log_warn "stage=container_check_failed server=${server_id}"
+      container_args=(--config "${CONFIG_FILE}" --monitor-mode "${server_id}")
+      if [[ -n "${server_log_file}" ]]; then
+        container_args=(--config "${CONFIG_FILE}" --log-file "${server_log_file}" --monitor-mode "${server_id}")
+      fi
+      if dry_run_enabled; then
+        container_args=(--dry-run "${container_args[@]}")
+      fi
+    fi
+
+    should_run_container_check=false
+    if [[ "${host_check_passed}" == "true" ]]; then
+      should_run_container_check=true
+    elif ! is_truthy "${REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK}"; then
+      should_run_container_check=true
+    fi
+
+    if is_truthy "${should_run_container_check}"; then
+      if "${CONTAINER_SCRIPT}" "${container_args[@]}"; then
+        log_event "MONITOR" "stage=container_check_passed server=${server_id}"
+      else
+        container_failed_servers+=("${server_id}")
+        container_check_passed=false
+        log_warn "stage=container_check_failed server=${server_id}"
+      fi
     fi
   else
     log_event "MONITOR" "stage=container_check_skipped server=${server_id} reason=disabled"

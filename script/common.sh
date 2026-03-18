@@ -322,12 +322,12 @@ format_slack_reason_label() {
     wake_failed) printf '%s\n' "WOL 전송 실패" ;;
     health_check_failed) printf '%s\n' "호스트 점검 실패" ;;
     restart_or_postcheck_failed) printf '%s\n' "컨테이너 기동 또는 점검 실패" ;;
-    container_health_check_failed) printf '%s\n' "컨테이너 점검 실패" ;;
+    container_health_check_failed*) printf '%s\n' "컨테이너 점검 실패" ;;
     timeout) printf '%s\n' "제한 시간 초과" ;;
-    docker_start_failed) printf '%s\n' "컨테이너 시작 실패" ;;
-    container_not_running) printf '%s\n' "컨테이너 비실행 상태" ;;
-    ssh_unavailable) printf '%s\n' "컨테이너 SSH 확인 실패" ;;
-    gpu_unavailable) printf '%s\n' "컨테이너 GPU 확인 실패" ;;
+    docker_start_failed*) printf '%s\n' "컨테이너 시작 실패" ;;
+    container_not_running*) printf '%s\n' "컨테이너 비실행 상태" ;;
+    ssh_unavailable*) printf '%s\n' "컨테이너 SSH 확인 실패" ;;
+    gpu_unavailable*) printf '%s\n' "컨테이너 GPU 확인 실패" ;;
     mount_check_failed) printf '%s\n' "NFS 마운트 확인 실패" ;;
     host_gpu_check_failed) printf '%s\n' "호스트 GPU 확인 실패" ;;
     create_test_container_failed) printf '%s\n' "테스트 컨테이너 생성 실패" ;;
@@ -337,12 +337,52 @@ format_slack_reason_label() {
   esac
 }
 
+format_slack_reason_explanation() {
+  case "$1" in
+    docker_start_failed*)
+      printf '%s\n' "종료 상태의 대상 컨테이너를 자동으로 켜려고 했지만 시작에 실패했습니다.
+Docker daemon 상태, 컨테이너 설정, 마운트/GPU runtime 문제 여부를 확인해 주세요."
+      ;;
+    container_not_running*)
+      printf '%s\n' "기동 대상 컨테이너가 점검 시점에도 실행 상태가 아니었습니다.
+컨테이너가 시작 직후 종료되었거나 내부 프로세스 오류가 발생했을 가능성이 있습니다."
+      ;;
+    ssh_unavailable*)
+      printf '%s\n' "컨테이너는 올라왔지만 SSH 서비스가 응답하지 않았습니다.
+컨테이너 내부 sshd 기동 실패 또는 초기화 지연 가능성을 확인해 주세요."
+      ;;
+    gpu_unavailable*)
+      printf '%s\n' "컨테이너 내부에서 GPU 확인(`nvidia-smi`)이 성공하지 않았습니다.
+GPU 할당, NVIDIA runtime 연결, 드라이버 인식 상태를 확인해 주세요."
+      ;;
+    container_health_check_failed*)
+      printf '%s\n' "컨테이너 점검 단계에서 실패했지만 세부 원인을 완전히 추출하지 못했습니다.
+아래 원문과 monitor 로그를 함께 확인해 주세요."
+      ;;
+    mount_check_failed)
+      printf '%s\n' "필수 NFS 마운트가 보이지 않습니다.
+서버의 mount 상태와 원격 스토리지 연결 상태를 확인해 주세요."
+      ;;
+    host_gpu_check_failed)
+      printf '%s\n' "호스트에서 GPU 명령이 정상 응답하지 않았습니다.
+드라이버, 장치 인식, NVIDIA 관련 서비스 상태를 확인해 주세요."
+      ;;
+    docker_daemon_unavailable)
+      printf '%s\n' "Docker daemon이 정상 응답하지 않았습니다.
+Docker 서비스 상태와 소켓 접근 가능 여부를 확인해 주세요."
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 build_slack_message() {
   local message="$1"
   local route_hint="${2:-}"
   local message_prefix="${3:-[remote_boot]}"
   local route_label server_value targets_value pending_value stage_value reason_value host_value time_value test_value container_value container_id_value detail_value_field
-  local stage_label reason_label detail_value title
+  local stage_label reason_label reason_explanation detail_value title
   local formatted_message=""
   local log_file_label="${REMOTE_BOOT_CURRENT_LOG_FILE:-${REMOTE_BOOT_LOG_FILE:-/var/log/remote-boot.log}}"
 
@@ -392,6 +432,9 @@ build_slack_message() {
   if [[ -n "${reason_value}" ]]; then
     reason_label="$(format_slack_reason_label "${reason_value}")"
     formatted_message+=$'\n'"▶ *원인*: ${reason_label}"
+    if reason_explanation="$(format_slack_reason_explanation "${reason_value}" 2>/dev/null)"; then
+      formatted_message+=$'\n'"▶ *설명*: ${reason_explanation}"
+    fi
   fi
 
   if [[ -n "${container_value}" ]]; then
