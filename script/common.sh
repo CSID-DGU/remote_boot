@@ -341,10 +341,10 @@ build_slack_message() {
   local message="$1"
   local route_hint="${2:-}"
   local message_prefix="${3:-[remote_boot]}"
-  local route_label server_value targets_value pending_value stage_value reason_value host_value time_value test_value container_value container_id_value
+  local route_label server_value targets_value pending_value stage_value reason_value host_value time_value test_value container_value container_id_value detail_value_field
   local stage_label reason_label detail_value title
   local formatted_message=""
-  local log_file_label="${REMOTE_BOOT_LOG_FILE:-/var/log/remote-boot.log}"
+  local log_file_label="${REMOTE_BOOT_CURRENT_LOG_FILE:-${REMOTE_BOOT_LOG_FILE:-/var/log/remote-boot.log}}"
 
   route_label="$(format_slack_route_label "${message}" "${route_hint}")"
   server_value="$(extract_message_value "${message}" "server" 2>/dev/null || true)"
@@ -357,6 +357,7 @@ build_slack_message() {
   test_value="$(extract_message_value "${message}" "test_message" 2>/dev/null || true)"
   container_value="$(extract_message_value "${message}" "container" 2>/dev/null || true)"
   container_id_value="$(extract_message_value "${message}" "container_id" 2>/dev/null || true)"
+  detail_value_field="$(extract_message_value "${message}" "detail" 2>/dev/null || true)"
 
   if [[ -n "${test_value}" ]]; then
     title=":bell: *${message_prefix} Slack 알림 테스트*"
@@ -399,6 +400,10 @@ build_slack_message() {
 
   if [[ -n "${container_id_value}" ]]; then
     formatted_message+=$'\n'"▶ *컨테이너 ID*: ${container_id_value}"
+  fi
+
+  if [[ -n "${detail_value_field}" ]]; then
+    formatted_message+=$'\n'"▶ *세부*: ${detail_value_field}"
   fi
 
   if [[ -z "${test_value}" ]]; then

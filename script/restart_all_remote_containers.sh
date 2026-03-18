@@ -121,7 +121,7 @@ extract_container_failure_detail() {
   local output="$1"
   local failure_line reason_value container_value container_id_value
 
-  failure_line="$(printf '%s\n' "${output}" | grep -E 'reason=(docker_start_failed|container_not_running|ssh_unavailable|gpu_unavailable)' | tail -n 1 || true)"
+  failure_line="$(printf '%s\n' "${output}" | grep -E 'stage=container_monitor .*reason=(docker_start_failed|container_not_running|ssh_unavailable|gpu_unavailable)|reason=(docker_start_failed|container_not_running|ssh_unavailable|gpu_unavailable)' | tail -n 1 || true)"
   [[ -n "${failure_line}" ]] || return 1
 
   reason_value="$(printf '%s\n' "${failure_line}" | sed -n 's/.*reason=\([^[:space:]]*\).*/\1/p' | head -n 1)"
@@ -138,6 +138,17 @@ extract_container_failure_detail() {
     printf ' container_id=%s' "${container_id_value}"
   fi
   printf '\n'
+}
+
+extract_container_failure_summary() {
+  local output="$1"
+  local summary_line
+
+  summary_line="$(printf '%s\n' "${output}" | grep -E 'stage=container_monitor|FAILED \| rc=|UNREACHABLE!' | tail -n 1 || true)"
+  [[ -n "${summary_line}" ]] || return 1
+
+  summary_line="$(flatten_command "${summary_line}")"
+  printf '%s\n' "${summary_line}"
 }
 
 dry_run_restart_plan() {
@@ -404,6 +415,7 @@ if is_truthy "${MONITOR_MODE}"; then
   monitor_deadline=$((SECONDS + REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS))
   local_output=""
   failure_detail=""
+  failure_summary=""
 
   log_event "CONTAINER" "stage=container_monitor action=begin servers=\"$*\" timeout_seconds=${REMOTE_BOOT_CONTAINER_RESTART_TIMEOUT_SECONDS}"
 
@@ -429,6 +441,7 @@ if is_truthy "${MONITOR_MODE}"; then
       [[ -n "${local_output}" ]] && printf '%s\n' "${local_output}" >&2
       failed_servers+=("${server_id}")
       failure_detail="$(extract_container_failure_detail "${local_output}" || true)"
+      failure_summary="$(extract_container_failure_summary "${local_output}" || true)"
       if [[ -n "${failure_detail}" ]]; then
         log_error "stage=container_monitor server=${server_id} host=${host_alias} ${failure_detail}"
       else
@@ -436,6 +449,8 @@ if is_truthy "${MONITOR_MODE}"; then
       fi
       if [[ -n "${failure_detail}" ]]; then
         notify_failure "server=${server_id} stage=container_monitor ${failure_detail}"
+      elif [[ -n "${failure_summary}" ]]; then
+        notify_failure "server=${server_id} stage=container_monitor reason=container_health_check_failed detail=\"${failure_summary}\""
       else
         notify_failure "server=${server_id} stage=container_monitor reason=container_health_check_failed"
       fi
