@@ -308,6 +308,7 @@ format_slack_stage_label() {
     remaining_gate) printf '%s\n' "나머지 서버 호스트 점검" ;;
     restart_all_remote_containers) printf '%s\n' "컨테이너 기동 및 점검" ;;
     container_monitor) printf '%s\n' "컨테이너 모니터 점검" ;;
+    ssh_check) printf '%s\n' "SSH 접속 점검" ;;
     mount_check) printf '%s\n' "NFS 마운트 점검" ;;
     host_gpu_check) printf '%s\n' "호스트 GPU 점검" ;;
     create_test_container) printf '%s\n' "테스트 컨테이너 생성" ;;
@@ -328,6 +329,7 @@ format_slack_reason_label() {
     container_not_running*) printf '%s\n' "컨테이너 비실행 상태" ;;
     ssh_unavailable*) printf '%s\n' "컨테이너 SSH 확인 실패" ;;
     gpu_unavailable*) printf '%s\n' "컨테이너 GPU 확인 실패" ;;
+    ssh_connection_failed) printf '%s\n' "SSH 접속 실패" ;;
     mount_check_failed) printf '%s\n' "NFS 마운트 확인 실패" ;;
     host_gpu_check_failed) printf '%s\n' "호스트 GPU 확인 실패" ;;
     create_test_container_failed) printf '%s\n' "테스트 컨테이너 생성 실패" ;;
@@ -358,6 +360,10 @@ GPU 할당, NVIDIA runtime 연결, 드라이버 인식 상태를 확인해 주�
     container_health_check_failed*)
       printf '%s\n' "컨테이너 점검 단계에서 실패했지만 세부 원인을 완전히 추출하지 못했습니다.
 아래 원문과 monitor 로그를 함께 확인해 주세요."
+      ;;
+    ssh_connection_failed)
+      printf '%s\n' "Ansible을 통한 SSH 접속이 응답하지 않습니다.
+SSH 서비스 상태, 방화벽, known_hosts 등 Ansible 연결 설정을 확인해 주세요."
       ;;
     mount_check_failed)
       printf '%s\n' "필수 NFS 마운트가 보이지 않습니다.

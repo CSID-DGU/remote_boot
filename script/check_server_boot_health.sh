@@ -117,6 +117,7 @@ fail_with_notification() {
 }
 
 reset_health_alert_state() {
+  clear_failure_alerts_matching "server=${SERVER_ID_INPUT} stage=ssh_check"
   clear_failure_alerts_matching "server=${SERVER_ID_INPUT} stage=mount_check"
   clear_failure_alerts_matching "server=${SERVER_ID_INPUT} stage=host_gpu_check"
   clear_failure_alerts_matching "server=${SERVER_ID_INPUT} stage=docker_daemon_check"
@@ -141,6 +142,7 @@ dry_run_health_check() {
   container_gpu_recovery_command="$(flatten_command "$(build_container_gpu_recovery_command "${test_container_name}")")"
 
   log_dry_run "server=${SERVER_ID_INPUT} action=health_check_plan host=${target_host} timeout_seconds=${REMOTE_BOOT_TEST_POST_CREATE_TIMEOUT_SECONDS} poll_seconds=${REMOTE_BOOT_TEST_POST_CREATE_POLL_SECONDS}"
+  log_step "stage=ssh_check host=${target_host} dry_run_command=\"true\" max_attempts=${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS:-3} poll_seconds=${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS:-10}"
   log_step "stage=mount_check dry_run_command=\"${mount_check_command}\" recovery_action=remount_nfs recovery_command=\"${mount_recovery_command}\""
   log_step "stage=host_gpu_check dry_run_command=\"${host_gpu_check_command}\" recovery_action=reload_gpu_modules recovery_command=\"${host_gpu_recovery_command}\""
 
@@ -337,6 +339,29 @@ trap cleanup_test_container EXIT TERM INT
 if [[ -n "${HEALTH_LOG_FILE}" ]]; then
   log_step "log_file=${HEALTH_LOG_FILE}"
 fi
+
+REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS="${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS:-3}"
+REMOTE_BOOT_SSH_CHECK_POLL_SECONDS="${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS:-10}"
+
+log_step "stage=ssh_check host=${target_host} max_attempts=${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS}"
+ssh_attempt=1
+ssh_ok=false
+while (( ssh_attempt <= REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS )); do
+  log_step "stage=ssh_check host=${target_host} attempt=${ssh_attempt}"
+  if run_remote_shell "${target_host}" "true"; then
+    ssh_ok=true
+    break
+  fi
+  if (( ssh_attempt < REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS )); then
+    sleep "${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS}"
+  fi
+  ssh_attempt=$((ssh_attempt + 1))
+done
+
+if [[ "${ssh_ok}" != "true" ]]; then
+  fail_with_notification "ssh_check" "ssh_connection_failed"
+fi
+log_step "stage=ssh_check status=reachable host=${target_host}"
 
 log_step "stage=mount_check required_mount=${required_mount}"
 run_step_with_single_recovery \
