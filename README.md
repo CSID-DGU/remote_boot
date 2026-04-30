@@ -13,6 +13,9 @@ Wake-on-LAN targets can be sent automatically whenever this desktop boots.
 - `script/wait_for_priority_servers.sh`: retry health checks until timeout before waking the rest
 - `script/restart_all_remote_containers.sh`: start stopped containers on selected servers with retry, then run per-container SSH/GPU post-checks; supports a limited monitor mode
 - `script/run_remote_boot_monitor.sh`: periodically run host health checks and limited container self-heal checks against selected servers
+- `cmd/cluster-monitor-exporter`: local Prometheus exporter for the same host/container health checks
+- `script/deploy_cluster_monitor_exporter.sh`: build and deploy the local exporter to FARM/LAB servers
+- `prometheus/cluster_monitor_alerts.yml`: Prometheus alert rules for exporter metrics
 - `script/integration_smoke_test.sh`: manual ansible/docker/GPU smoke test before enabling boot automation
 - `script/dry_run_remote_boot.sh`: dry-run wrapper for wake, health, container, and full-flow simulations
 - `script/test_slack_notification.sh`: send a real Slack test message using local config
@@ -87,6 +90,25 @@ The periodic monitor keeps its scope limited:
 - it may run `service ssh start` inside containers when SSH is down
 - it does not restart containers or restart the Docker daemon
 - it checks mount, host GPU, docker daemon reachability, container SSH, and GPU availability for `decs` containers
+
+Local Prometheus exporter:
+
+```bash
+# Build locally
+go build -o bin/cluster-monitor-exporter ./cmd/cluster-monitor-exporter
+
+# Run one server locally on port 30074
+./bin/cluster-monitor-exporter --config config/cluster_monitor_exporter.example.env
+
+# Deploy to FARM and LAB servers from the management host
+./script/deploy_cluster_monitor_exporter.sh --targets all
+```
+
+The exporter listens on `:30074` by default and exposes `/metrics`.
+It performs the same local checks as the monitor path: required mount presence,
+host GPU, Docker daemon, target container running state, target container SSH,
+and target container GPU. For target containers, it also starts stopped
+containers and attempts to start in-container SSH before reporting failure.
 
 Alert suppression:
 
@@ -186,7 +208,7 @@ Dry-run behavior:
 - Post-boot container start/post-check flow:
   `REMOTE_BOOT_ENABLE_CONTAINER_RESTART`, `REMOTE_BOOT_CONTAINER_RESTART_*`, `REMOTE_BOOT_CONTAINER_POST_RESTART_CHECK_*`
 - Ansible / network:
-  `REMOTE_BOOT_ANSIBLE_INVENTORY`, broadcast IPs
+  `REMOTE_BOOT_ANSIBLE_INVENTORY`, `REMOTE_BOOT_SSH_CHECK_*`, broadcast IPs
 - Wake-on-LAN MAC addresses:
   `REMOTE_BOOT_MAC_<TARGET>`
 - Host health-check requirements:
@@ -210,6 +232,8 @@ Most commonly changed options:
   whether the remaining servers also run host health checks after they wake
 - `REMOTE_BOOT_ENABLE_CONTAINER_RESTART`:
   whether stopped containers are started after boot and all containers are post-checked
+- `REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS`, `REMOTE_BOOT_SSH_CHECK_POLL_SECONDS`:
+  how long boot and monitor health checks wait for host SSH reachability before alerting
 - `REMOTE_BOOT_MONITOR_TARGETS`:
   which already running servers are checked by the 15-minute timer
 - `REMOTE_BOOT_MONITOR_ENABLE_HOST_HEALTH_CHECK`, `REMOTE_BOOT_MONITOR_ENABLE_CONTAINER_CHECK`:

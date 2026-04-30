@@ -142,7 +142,7 @@ dry_run_health_check() {
   container_gpu_recovery_command="$(flatten_command "$(build_container_gpu_recovery_command "${test_container_name}")")"
 
   log_dry_run "server=${SERVER_ID_INPUT} action=health_check_plan host=${target_host} timeout_seconds=${REMOTE_BOOT_TEST_POST_CREATE_TIMEOUT_SECONDS} poll_seconds=${REMOTE_BOOT_TEST_POST_CREATE_POLL_SECONDS}"
-  log_step "stage=ssh_check host=${target_host} dry_run_command=\"true\" max_attempts=${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS:-3} poll_seconds=${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS:-10}"
+  log_step "stage=ssh_check host=${target_host} dry_run_command=\"true\" max_attempts=${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS} poll_seconds=${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS}"
   log_step "stage=mount_check dry_run_command=\"${mount_check_command}\" recovery_action=remount_nfs recovery_command=\"${mount_recovery_command}\""
   log_step "stage=host_gpu_check dry_run_command=\"${host_gpu_check_command}\" recovery_action=reload_gpu_modules recovery_command=\"${host_gpu_recovery_command}\""
 
@@ -297,12 +297,17 @@ REMOTE_BOOT_LAB_REQUIRED_MOUNT="${REMOTE_BOOT_LAB_REQUIRED_MOUNT:-100.100.100.10
 REMOTE_BOOT_FARM_REQUIRED_MOUNT="${REMOTE_BOOT_FARM_REQUIRED_MOUNT:-100.100.100.120:/volume1/share}"
 REMOTE_BOOT_TEST_USERNAME="${REMOTE_BOOT_TEST_USERNAME:-boot_test}"
 REMOTE_BOOT_TEST_CONTAINER_NAME_PREFIX="${REMOTE_BOOT_TEST_CONTAINER_NAME_PREFIX:-boot_test_probe}"
+REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS="${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS:-8}"
+REMOTE_BOOT_SSH_CHECK_POLL_SECONDS="${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS:-20}"
 REMOTE_BOOT_TEST_POST_CREATE_TIMEOUT_SECONDS="${REMOTE_BOOT_TEST_POST_CREATE_TIMEOUT_SECONDS:-120}"
 REMOTE_BOOT_TEST_POST_CREATE_POLL_SECONDS="${REMOTE_BOOT_TEST_POST_CREATE_POLL_SECONDS:-5}"
 REMOTE_BOOT_HOST_SHARE_MOUNT_TEMPLATE="${REMOTE_BOOT_HOST_SHARE_MOUNT_TEMPLATE:-/home/tako%s/share}"
 
-if ! [[ "${REMOTE_BOOT_TEST_POST_CREATE_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || ! [[ "${REMOTE_BOOT_TEST_POST_CREATE_POLL_SECONDS}" =~ ^[0-9]+$ ]]; then
-  echo "Error: post-create retry settings must be numeric." >&2
+if ! [[ "${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS}" =~ ^[0-9]+$ ]] ||
+  ! [[ "${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS}" =~ ^[0-9]+$ ]] ||
+  ! [[ "${REMOTE_BOOT_TEST_POST_CREATE_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] ||
+  ! [[ "${REMOTE_BOOT_TEST_POST_CREATE_POLL_SECONDS}" =~ ^[0-9]+$ ]]; then
+  echo "Error: retry settings must be numeric." >&2
   exit 1
 fi
 
@@ -339,9 +344,6 @@ trap cleanup_test_container EXIT TERM INT
 if [[ -n "${HEALTH_LOG_FILE}" ]]; then
   log_step "log_file=${HEALTH_LOG_FILE}"
 fi
-
-REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS="${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS:-3}"
-REMOTE_BOOT_SSH_CHECK_POLL_SECONDS="${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS:-10}"
 
 log_step "stage=ssh_check host=${target_host} max_attempts=${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS}"
 ssh_attempt=1

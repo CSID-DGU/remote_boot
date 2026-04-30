@@ -1,0 +1,62 @@
+groups:
+  - name: cluster_monitor_exporter
+    rules:
+      - alert: ClusterMonitorExporterDown
+        expr: up{job="cluster-monitor-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} exporter is down"
+
+      - alert: ClusterMonitorRequiredMountDown
+        expr: cluster_monitor_host_mount_up{job="cluster-monitor-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.server }} required mount is missing"
+          description: "source={{ $labels.source }} target={{ $labels.target }}"
+
+      - alert: ClusterMonitorHostGpuDown
+        expr: cluster_monitor_host_gpu_up{job="cluster-monitor-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.server }} host GPU check failed"
+
+      - alert: ClusterMonitorDockerDown
+        expr: cluster_monitor_docker_daemon_up{job="cluster-monitor-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.server }} Docker daemon check failed"
+
+      - alert: ClusterMonitorTargetContainerStopped
+        expr: cluster_monitor_container_running{job="cluster-monitor-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.server }} target container is not running"
+          description: "container={{ $labels.container }} image={{ $labels.image }}"
+
+      - alert: ClusterMonitorTargetContainerSshDown
+        expr: cluster_monitor_container_ssh_up{job="cluster-monitor-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.server }} target container SSH check failed"
+          description: "container={{ $labels.container }} image={{ $labels.image }}"
+
+      - alert: ClusterMonitorTargetContainerGpuDown
+        expr: cluster_monitor_container_gpu_up{job="cluster-monitor-exporter"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.server }} target container GPU check failed"
+          description: "container={{ $labels.container }} image={{ $labels.image }}"

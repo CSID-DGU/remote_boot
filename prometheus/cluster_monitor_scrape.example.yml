@@ -1,0 +1,79 @@
+scrape_configs:
+  - job_name: cluster-monitor-exporter
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - 192.168.2.11:30074
+        labels:
+          cluster: farm
+          server_id: FARM1
+      - targets:
+          - 192.168.2.12:30074
+        labels:
+          cluster: farm
+          server_id: FARM2
+      - targets:
+          - 192.168.2.16:30074
+        labels:
+          cluster: farm
+          server_id: FARM6
+      - targets:
+          - 192.168.2.17:30074
+        labels:
+          cluster: farm
+          server_id: FARM7
+      - targets:
+          - 192.168.2.18:30074
+        labels:
+          cluster: farm
+          server_id: FARM8
+      - targets:
+          - 192.168.2.19:30074
+        labels:
+          cluster: farm
+          server_id: FARM9
+      - targets:
+          - 192.168.1.11:30074
+        labels:
+          cluster: lab
+          server_id: LAB1
+      - targets:
+          - 192.168.1.12:30074
+        labels:
+          cluster: lab
+          server_id: LAB2
+      - targets:
+          - 192.168.1.13:30074
+        labels:
+          cluster: lab
+          server_id: LAB3
+      - targets:
+          - 192.168.1.14:30074
+        labels:
+          cluster: lab
+          server_id: LAB4
+      - targets:
+          - 192.168.1.15:30074
+        labels:
+          cluster: lab
+          server_id: LAB5
+      - targets:
+          - 192.168.1.16:30074
+        labels:
+          cluster: lab
+          server_id: LAB6
+      - targets:
+          - 192.168.1.17:30074
+        labels:
+          cluster: lab
+          server_id: LAB7
+      - targets:
+          - 192.168.1.18:30074
+        labels:
+          cluster: lab
+          server_id: LAB8
+      - targets:
+          - 192.168.1.19:30074
+        labels:
+          cluster: lab
+          server_id: LAB9

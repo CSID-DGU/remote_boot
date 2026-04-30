@@ -8,3 +8,6 @@ config/remote_boot.local.env
 
 # Local logs
 *.log
+
+# Local build outputs
+bin/
