@@ -137,6 +137,7 @@ CLUSTER_MONITOR_EXPORTER_CHECK_INTERVAL="${CLUSTER_MONITOR_EXPORTER_CHECK_INTERV
 CLUSTER_MONITOR_EXPORTER_COMMAND_TIMEOUT="${CLUSTER_MONITOR_EXPORTER_COMMAND_TIMEOUT:-${REMOTE_BOOT_EXPORTER_COMMAND_TIMEOUT:-10s}}"
 CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_TIMEOUT="${CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_TIMEOUT:-${REMOTE_BOOT_EXPORTER_CONTAINER_CHECK_TIMEOUT:-60s}}"
 CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_POLL="${CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_POLL:-${REMOTE_BOOT_EXPORTER_CONTAINER_CHECK_POLL:-5s}}"
+CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED="${CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED:-${REMOTE_BOOT_EXPORTER_MOUNT_RECOVERY_ENABLED:-true}}"
 CLUSTER_MONITOR_EXPORTER_CONTAINER_NVML_RECOVERY_ENABLED="${CLUSTER_MONITOR_EXPORTER_CONTAINER_NVML_RECOVERY_ENABLED:-${REMOTE_BOOT_EXPORTER_CONTAINER_NVML_RECOVERY_ENABLED:-true}}"
 CLUSTER_MONITOR_EXPORTER_CONTAINER_IMAGE_REGEX="${CLUSTER_MONITOR_EXPORTER_CONTAINER_IMAGE_REGEX:-${REMOTE_BOOT_EXPORTER_CONTAINER_IMAGE_REGEX:-${REMOTE_BOOT_CONTAINER_TARGET_IMAGE_REGEX:-^(decs|dguailab/decs)(:|$)}}}"
 
@@ -300,6 +301,7 @@ CLUSTER_MONITOR_EXPORTER_COMMAND_TIMEOUT="${CLUSTER_MONITOR_EXPORTER_COMMAND_TIM
 CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_TIMEOUT="${CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_TIMEOUT}"
 CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_POLL="${CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_POLL}"
 CLUSTER_MONITOR_EXPORTER_REQUIRED_MOUNTS="${required_mount}=${host_mount_path}"
+CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED="${CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED}"
 CLUSTER_MONITOR_EXPORTER_HOST_GPU_CHECK_ENABLED=true
 CLUSTER_MONITOR_EXPORTER_DOCKER_CHECK_ENABLED=true
 CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECKS_ENABLED=true
@@ -309,6 +311,7 @@ CLUSTER_MONITOR_EXPORTER_CONTAINER_NVML_RECOVERY_ENABLED="${CLUSTER_MONITOR_EXPO
 CLUSTER_MONITOR_EXPORTER_CONTAINER_IMAGE_REGEX="${CLUSTER_MONITOR_EXPORTER_CONTAINER_IMAGE_REGEX}"
 CLUSTER_MONITOR_EXPORTER_DOCKER_PATH="docker"
 CLUSTER_MONITOR_EXPORTER_NVIDIA_SMI_PATH="nvidia-smi"
+CLUSTER_MONITOR_EXPORTER_MOUNT_PATH="mount"
 EOF
 
   log_event "EXPORTER" "server=${server_id} host=${host_alias} action=copy"
@@ -317,7 +320,7 @@ EOF
   run_ansible "${host_alias}" -m copy -a "src=${unit_file} dest=${remote_tmp_unit} mode=0644" >/dev/null
 
   log_event "EXPORTER" "server=${server_id} host=${host_alias} action=install"
-  run_remote_shell "${host_alias}" "sudo -n install -D -m 0755 '${remote_tmp_binary}' '${REMOTE_BINARY}' && sudo -n install -D -m 0644 '${remote_tmp_env}' '${REMOTE_CONFIG}' && sudo -n install -D -m 0644 '${remote_tmp_unit}' '${REMOTE_SERVICE}' && sudo -n systemctl daemon-reload && (sudo -n systemctl disable --now '${OLD_SERVICE_NAME}.service' >/dev/null 2>&1 || true) && sudo -n systemctl enable --now '${SERVICE_NAME}.service'" >/dev/null
+  run_remote_shell "${host_alias}" "sudo -n install -D -m 0755 '${remote_tmp_binary}' '${REMOTE_BINARY}' && sudo -n install -D -m 0644 '${remote_tmp_env}' '${REMOTE_CONFIG}' && sudo -n install -D -m 0644 '${remote_tmp_unit}' '${REMOTE_SERVICE}' && sudo -n systemctl daemon-reload && (sudo -n systemctl disable --now '${OLD_SERVICE_NAME}.service' >/dev/null 2>&1 || true) && sudo -n systemctl enable '${SERVICE_NAME}.service' && sudo -n systemctl restart '${SERVICE_NAME}.service'" >/dev/null
 
   verify_command="deadline=\$((\$(date +%s) + 180)); while [ \$(date +%s) -lt \$deadline ]; do sudo -n systemctl is-active --quiet '${SERVICE_NAME}.service' && { if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:${PORT}/metrics'; else wget -qO- 'http://127.0.0.1:${PORT}/metrics'; fi; } | grep -E 'cluster_monitor_exporter_info|cluster_monitor_docker_daemon_up|cluster_monitor_host_gpu_up' >/dev/null && exit 0; sleep 2; done; sudo -n systemctl status '${SERVICE_NAME}.service' --no-pager; exit 1"
   log_event "EXPORTER" "server=${server_id} host=${host_alias} action=verify"

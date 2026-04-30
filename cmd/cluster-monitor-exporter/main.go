@@ -32,6 +32,8 @@ type Config struct {
 	ContainerCheckPoll     time.Duration
 	DockerPath             string
 	NvidiaSmiPath          string
+	MountPath              string
+	MountRecoveryEnabled   bool
 	HostGPUCheckEnabled    bool
 	DockerCheckEnabled     bool
 	ContainerChecksEnabled bool
@@ -141,6 +143,8 @@ func loadConfig() (Config, error) {
 		ContainerCheckPoll:     envDurationCompat("CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_POLL", "REMOTE_BOOT_EXPORTER_CONTAINER_CHECK_POLL", 5*time.Second),
 		DockerPath:             envStringCompat("CLUSTER_MONITOR_EXPORTER_DOCKER_PATH", "REMOTE_BOOT_EXPORTER_DOCKER_PATH", "docker"),
 		NvidiaSmiPath:          envStringCompat("CLUSTER_MONITOR_EXPORTER_NVIDIA_SMI_PATH", "REMOTE_BOOT_EXPORTER_NVIDIA_SMI_PATH", "nvidia-smi"),
+		MountPath:              envStringCompat("CLUSTER_MONITOR_EXPORTER_MOUNT_PATH", "REMOTE_BOOT_EXPORTER_MOUNT_PATH", "mount"),
+		MountRecoveryEnabled:   envBoolCompat("CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED", "REMOTE_BOOT_EXPORTER_MOUNT_RECOVERY_ENABLED", true),
 		HostGPUCheckEnabled:    envBoolCompat("CLUSTER_MONITOR_EXPORTER_HOST_GPU_CHECK_ENABLED", "REMOTE_BOOT_EXPORTER_HOST_GPU_CHECK_ENABLED", true),
 		DockerCheckEnabled:     envBoolCompat("CLUSTER_MONITOR_EXPORTER_DOCKER_CHECK_ENABLED", "REMOTE_BOOT_EXPORTER_DOCKER_CHECK_ENABLED", true),
 		ContainerChecksEnabled: envBoolCompat("CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECKS_ENABLED", "REMOTE_BOOT_EXPORTER_CONTAINER_CHECKS_ENABLED", true),
@@ -407,21 +411,54 @@ func (c *Collector) collectMounts(r *renderer) {
 	}
 
 	for _, req := range c.cfg.RequiredMounts {
-		up := 0.0
-		for _, mount := range mounts {
-			if mountMatches(req, mount) {
-				up = 1
-				break
+		up := boolFloat(mountRequirementUp(req, mounts))
+		recoveryAttempted := false
+		recoverySuccess := false
+
+		if up == 0 && c.cfg.MountRecoveryEnabled && req.Target != "" {
+			recoveryAttempted = true
+			recoverySuccess = c.recoverMount(req)
+			if updatedMounts, readErr := readMountInfo(); readErr == nil {
+				mounts = updatedMounts
+				up = boolFloat(mountRequirementUp(req, mounts))
+			} else {
+				checkSuccess = 0
 			}
 		}
+
 		r.emit("cluster_monitor_host_mount_up", "Whether a configured required mount is present.", "gauge",
 			labels("server", c.cfg.ServerID, "source", req.Source, "target", req.Target), up)
+		r.emit("cluster_monitor_host_mount_recovery_attempted", "Whether the exporter attempted to mount a missing configured mount during the last collection.", "gauge",
+			labels("server", c.cfg.ServerID, "source", req.Source, "target", req.Target), boolFloat(recoveryAttempted))
+		r.emit("cluster_monitor_host_mount_recovery_success", "Whether the exporter successfully mounted a missing configured mount during the last collection.", "gauge",
+			labels("server", c.cfg.ServerID, "source", req.Source, "target", req.Target), boolFloat(recoverySuccess && up == 1))
 	}
 
 	r.emit("cluster_monitor_check_success", "Whether an individual local health check executed successfully.", "gauge",
 		labels("server", c.cfg.ServerID, "check", "mount"), checkSuccess)
 	r.emit("cluster_monitor_check_duration_seconds", "Duration of an individual local health check.", "gauge",
 		labels("server", c.cfg.ServerID, "check", "mount"), time.Since(started).Seconds())
+}
+
+func mountRequirementUp(req MountRequirement, mounts []MountEntry) bool {
+	for _, mount := range mounts {
+		if mountMatches(req, mount) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Collector) recoverMount(req MountRequirement) bool {
+	output, err := runCommand(c.cfg.CommandTimeout, c.cfg.MountPath, req.Target)
+	if err != nil {
+		log.Printf("server=%s mount_recovery=false source=%q target=%q error=%v output=%q",
+			c.cfg.ServerID, req.Source, req.Target, err, truncateForLog(output, 300))
+		return false
+	}
+
+	log.Printf("server=%s mount_recovery=true source=%q target=%q", c.cfg.ServerID, req.Source, req.Target)
+	return true
 }
 
 func mountMatches(req MountRequirement, mount MountEntry) bool {
