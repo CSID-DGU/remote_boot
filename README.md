@@ -88,6 +88,7 @@ The periodic monitor keeps its scope limited:
 - it does not run remount/reload/restart recovery actions on the host
 - it starts containers that are in a stopped state
 - it may run `service ssh start` inside containers when SSH is down
+- it may repair an in-container `libnvidia-ml.so.1` symlink when `nvidia-smi` fails with an NVML driver/library version mismatch
 - it does not restart containers or restart the Docker daemon
 - it checks mount, host GPU, docker daemon reachability, container SSH, and GPU availability for `decs` containers
 
@@ -108,7 +109,9 @@ The exporter listens on `:30074` by default and exposes `/metrics`.
 It performs the same local checks as the monitor path: required mount presence,
 host GPU, Docker daemon, target container running state, target container SSH,
 and target container GPU. For target containers, it also starts stopped
-containers and attempts to start in-container SSH before reporting failure.
+containers, attempts to start in-container SSH, and repairs an in-container
+`libnvidia-ml.so.1` symlink when `nvidia-smi` reports an NVML driver/library
+version mismatch before reporting failure.
 
 Alert suppression:
 
@@ -163,6 +166,7 @@ Manual periodic monitor run:
 
 In monitor mode, host checks are limited to mount, host GPU, and docker daemon availability.
 Container checks start stopped containers, verify SSH for every container, try `service ssh start` when needed, and verify GPU only for `decs` / `dguailab/decs` containers.
+When a container GPU check fails specifically with an NVML driver/library version mismatch, the exporter can update the container's `libnvidia-ml.so.1` symlink to the host driver version if the matching library file is already present in the container. It does not restart containers for this recovery path.
 
 Manual alert-state reset:
 

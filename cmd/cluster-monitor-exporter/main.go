@@ -37,6 +37,7 @@ type Config struct {
 	ContainerChecksEnabled bool
 	StartStoppedContainers bool
 	ContainerSSHRecovery   bool
+	ContainerNVMLRecovery  bool
 	ContainerImageRegex    *regexp.Regexp
 	RequiredMounts         []MountRequirement
 }
@@ -58,6 +59,13 @@ type DockerContainer struct {
 	Image  string `json:"Image"`
 	State  string `json:"State"`
 	Status string `json:"Status"`
+}
+
+type ContainerGPUResult struct {
+	Up                     bool
+	NVMLMismatchDetected   bool
+	NVMLRecoveryAttempted  bool
+	NVMLRecoverySuccessful bool
 }
 
 type Collector struct {
@@ -138,6 +146,7 @@ func loadConfig() (Config, error) {
 		ContainerChecksEnabled: envBoolCompat("CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECKS_ENABLED", "REMOTE_BOOT_EXPORTER_CONTAINER_CHECKS_ENABLED", true),
 		StartStoppedContainers: envBoolCompat("CLUSTER_MONITOR_EXPORTER_START_STOPPED_CONTAINERS", "REMOTE_BOOT_EXPORTER_START_STOPPED_CONTAINERS", true),
 		ContainerSSHRecovery:   envBoolCompat("CLUSTER_MONITOR_EXPORTER_CONTAINER_SSH_RECOVERY_ENABLED", "REMOTE_BOOT_EXPORTER_CONTAINER_SSH_RECOVERY_ENABLED", true),
+		ContainerNVMLRecovery:  envBoolCompat("CLUSTER_MONITOR_EXPORTER_CONTAINER_NVML_RECOVERY_ENABLED", "REMOTE_BOOT_EXPORTER_CONTAINER_NVML_RECOVERY_ENABLED", true),
 		ContainerImageRegex:    imageRegex,
 		RequiredMounts:         parseRequiredMounts(envStringCompat("CLUSTER_MONITOR_EXPORTER_REQUIRED_MOUNTS", "REMOTE_BOOT_EXPORTER_REQUIRED_MOUNTS", "")),
 	}
@@ -624,9 +633,16 @@ func (c *Collector) collectContainer(r *renderer, container DockerContainer) {
 			labels("server", c.cfg.ServerID, "check", "container_ssh", "container", name), time.Since(sshStart).Seconds())
 
 		gpuStart := time.Now()
-		if c.waitForContainerGPU(container.ID) {
+		gpuResult := c.waitForContainerGPU(container.ID)
+		if gpuResult.Up {
 			gpuUp = 1
 		}
+		r.emit("cluster_monitor_container_gpu_nvml_mismatch_detected", "Whether container nvidia-smi failed with an NVML driver/library version mismatch during the last collection.", "gauge",
+			baseLabels, boolFloat(gpuResult.NVMLMismatchDetected))
+		r.emit("cluster_monitor_container_nvml_recovery_attempted", "Whether the exporter attempted to repair the container libnvidia-ml.so.1 symlink during the last collection.", "gauge",
+			baseLabels, boolFloat(gpuResult.NVMLRecoveryAttempted))
+		r.emit("cluster_monitor_container_nvml_recovery_success", "Whether the exporter successfully repaired the container libnvidia-ml.so.1 symlink during the last collection.", "gauge",
+			baseLabels, boolFloat(gpuResult.NVMLRecoverySuccessful))
 		r.emit("cluster_monitor_check_duration_seconds", "Duration of an individual local health check.", "gauge",
 			labels("server", c.cfg.ServerID, "check", "container_gpu", "container", name), time.Since(gpuStart).Seconds())
 	}
@@ -665,15 +681,32 @@ func (c *Collector) waitForContainerSSH(containerID string) bool {
 	}
 }
 
-func (c *Collector) waitForContainerGPU(containerID string) bool {
+func (c *Collector) waitForContainerGPU(containerID string) ContainerGPUResult {
+	result := ContainerGPUResult{}
 	deadline := time.Now().Add(c.cfg.ContainerCheckTimeout)
+	recoveryAttempted := false
+
 	for {
-		if c.checkContainerGPU(containerID) {
-			return true
+		output, err := c.checkContainerGPU(containerID)
+		if err == nil {
+			result.Up = true
+			return result
+		}
+
+		if isNVMLVersionMismatch(output) {
+			result.NVMLMismatchDetected = true
+			if c.cfg.ContainerNVMLRecovery && !recoveryAttempted {
+				recoveryAttempted = true
+				result.NVMLRecoveryAttempted = true
+				if c.repairContainerNVML(containerID) {
+					result.NVMLRecoverySuccessful = true
+					continue
+				}
+			}
 		}
 
 		if time.Now().After(deadline) {
-			return false
+			return result
 		}
 
 		sleepUntilNextAttempt(deadline, c.cfg.ContainerCheckPoll)
@@ -691,10 +724,139 @@ func (c *Collector) startContainerSSH(containerID string) {
 	_, _ = runCommand(c.cfg.CommandTimeout, c.cfg.DockerPath, "exec", containerID, "sh", "-lc", startCommand)
 }
 
-func (c *Collector) checkContainerGPU(containerID string) bool {
-	_, err := runCommand(c.cfg.CommandTimeout, c.cfg.DockerPath, "exec", containerID, "nvidia-smi")
-	return err == nil
+func (c *Collector) checkContainerGPU(containerID string) ([]byte, error) {
+	return runCommand(c.cfg.CommandTimeout, c.cfg.DockerPath, "exec", containerID, "nvidia-smi")
 }
+
+func isNVMLVersionMismatch(output []byte) bool {
+	return strings.Contains(strings.ToLower(string(output)), "driver/library version mismatch")
+}
+
+func (c *Collector) repairContainerNVML(containerID string) bool {
+	driverVersion, err := c.hostNvidiaDriverVersion()
+	if err != nil {
+		log.Printf("container=%s nvml_recovery=false reason=host_driver_version_error error=%v", containerID, err)
+		return false
+	}
+
+	output, err := runCommand(
+		c.cfg.CommandTimeout,
+		c.cfg.DockerPath,
+		"exec",
+		containerID,
+		"sh",
+		"-lc",
+		containerNVMLRepairScript,
+		"cluster-monitor-exporter",
+		driverVersion,
+	)
+	if err != nil {
+		log.Printf("container=%s nvml_recovery=false driver_version=%s error=%v output=%q",
+			containerID, driverVersion, err, truncateForLog(output, 300))
+		return false
+	}
+
+	log.Printf("container=%s nvml_recovery=true driver_version=%s", containerID, driverVersion)
+	return true
+}
+
+func (c *Collector) hostNvidiaDriverVersion() (string, error) {
+	output, err := runCommand(c.cfg.CommandTimeout, c.cfg.NvidiaSmiPath, "--query-gpu=driver_version", "--format=csv,noheader,nounits")
+	if err != nil {
+		return "", err
+	}
+
+	for _, line := range strings.Split(string(output), "\n") {
+		version := strings.TrimSpace(line)
+		if version == "" {
+			continue
+		}
+		if !isSafeNvidiaDriverVersion(version) {
+			return "", fmt.Errorf("unsafe driver version %q", version)
+		}
+		return version, nil
+	}
+
+	return "", errors.New("nvidia-smi did not return a driver version")
+}
+
+func isSafeNvidiaDriverVersion(version string) bool {
+	if version == "" || strings.HasPrefix(version, ".") || strings.HasSuffix(version, ".") {
+		return false
+	}
+	for _, r := range version {
+		if r != '.' && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func truncateForLog(output []byte, limit int) string {
+	text := strings.TrimSpace(string(output))
+	if limit < 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "..."
+}
+
+const containerNVMLRepairScript = `set -eu
+driver_version="$1"
+case "$driver_version" in
+  ""|.*|*.|*[!0123456789.]*)
+    exit 64
+    ;;
+esac
+
+lib_path=""
+if command -v nvidia-smi >/dev/null 2>&1 && command -v ldd >/dev/null 2>&1; then
+  nvidia_smi_path="$(command -v nvidia-smi)"
+  lib_path="$(ldd "$nvidia_smi_path" 2>/dev/null | while IFS= read -r line; do
+    case "$line" in
+      *"libnvidia-ml.so.1"*" => "*)
+        path_part="${line#*=> }"
+        printf '%s\n' "${path_part%% *}"
+        break
+        ;;
+    esac
+  done)"
+fi
+
+if [ -z "$lib_path" ] && command -v ldconfig >/dev/null 2>&1; then
+  lib_path="$(ldconfig -p 2>/dev/null | while IFS= read -r line; do
+    case "$line" in
+      *"libnvidia-ml.so.1"*" => "*)
+        printf '%s\n' "${line##* => }"
+        break
+        ;;
+    esac
+  done)"
+fi
+
+if [ -z "$lib_path" ]; then
+  lib_path="/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"
+fi
+
+lib_dir="${lib_path%/*}"
+if [ "$lib_dir" = "$lib_path" ] || [ -z "$lib_dir" ]; then
+  lib_dir="/usr/lib/x86_64-linux-gnu"
+fi
+
+target_base="libnvidia-ml.so.$driver_version"
+target_path="$lib_dir/$target_base"
+[ -f "$target_path" ] || exit 65
+
+cd "$lib_dir"
+if [ -e libnvidia-ml.so.1 ] && [ ! -L libnvidia-ml.so.1 ]; then
+  exit 66
+fi
+if [ -e libnvidia-ml.so ] && [ ! -L libnvidia-ml.so ]; then
+  exit 67
+fi
+
+ln -sfn "$target_base" libnvidia-ml.so.1
+ln -sfn libnvidia-ml.so.1 libnvidia-ml.so
+`
 
 func sleepUntilNextAttempt(deadline time.Time, poll time.Duration) {
 	remaining := time.Until(deadline)
@@ -766,6 +928,13 @@ func labels(values ...string) map[string]string {
 		result[values[i]] = values[i+1]
 	}
 	return result
+}
+
+func boolFloat(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func escapeLabelValue(value string) string {
