@@ -307,7 +307,6 @@ format_slack_stage_label() {
     remaining_wake) printf '%s\n' "나머지 서버 WOL 전송" ;;
     remaining_gate) printf '%s\n' "나머지 서버 호스트 점검" ;;
     restart_all_remote_containers) printf '%s\n' "컨테이너 기동 및 점검" ;;
-    container_monitor) printf '%s\n' "컨테이너 모니터 점검" ;;
     ssh_check) printf '%s\n' "SSH 접속 점검" ;;
     mount_check) printf '%s\n' "NFS 마운트 점검" ;;
     host_gpu_check) printf '%s\n' "호스트 GPU 점검" ;;
@@ -576,7 +575,7 @@ normalize_target() {
 
 load_target_groups() {
   REMOTE_BOOT_FARM_TARGETS="${REMOTE_BOOT_FARM_TARGETS:-FARM1 FARM2 FARM6 FARM7 FARM8 FARM9}"
-  REMOTE_BOOT_LAB_TARGETS="${REMOTE_BOOT_LAB_TARGETS:-LAB1 LAB2 LAB3 LAB4 LAB5 LAB6 LAB7 LAB8 LAB9}"
+  REMOTE_BOOT_LAB_TARGETS="${REMOTE_BOOT_LAB_TARGETS:-LAB1 LAB2 LAB3 LAB4 LAB5 LAB6 LAB7 LAB8 LAB9 LAB10}"
 
   parse_target_string "${REMOTE_BOOT_FARM_TARGETS}"
   FARM_TARGETS=("${PARSED_TARGETS[@]}")

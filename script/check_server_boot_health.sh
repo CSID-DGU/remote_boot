@@ -8,7 +8,6 @@ CONFIG_FILE="${PROJECT_ROOT}/config/remote_boot.local.env"
 SERVER_ID_INPUT=""
 LOG_FILE_OVERRIDE=""
 DRY_RUN=false
-MONITOR_MODE=false
 
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/common.sh"
@@ -22,7 +21,6 @@ Options:
   --config PATH         config file path (default: ${CONFIG_FILE})
   --server-id SERVER_ID target server id, for example FARM1 or LAB1
   --log-file PATH       append output to PATH while keeping terminal output
-  --monitor-mode        run non-intrusive host checks only
   --dry-run             print the health-check plan without changing remote state
   -h, --help            show this help
 EOF
@@ -129,11 +127,9 @@ reset_health_alert_state() {
 dry_run_health_check() {
   local mount_check_command host_gpu_check_command container_ssh_command container_gpu_command
   local mount_recovery_command host_gpu_recovery_command container_ssh_recovery_command container_gpu_recovery_command
-  local docker_daemon_check_command
 
   mount_check_command="df -h | grep -F '${required_mount}'"
   host_gpu_check_command="nvidia-smi"
-  docker_daemon_check_command="docker info >/dev/null 2>&1"
   mount_recovery_command="$(flatten_command "$(build_mount_recovery_command "${host_mount_path}")")"
   host_gpu_recovery_command="$(flatten_command "$(build_host_gpu_recovery_command)")"
   container_ssh_command="docker exec '${test_container_name}' sh -lc \"service ssh status >/dev/null 2>&1 || { [ -x /etc/init.d/ssh ] && /etc/init.d/ssh status >/dev/null 2>&1; } || ps -ef | grep '[s]shd' >/dev/null\""
@@ -145,12 +141,6 @@ dry_run_health_check() {
   log_step "stage=ssh_check host=${target_host} dry_run_command=\"true\" max_attempts=${REMOTE_BOOT_SSH_CHECK_MAX_ATTEMPTS:-3} poll_seconds=${REMOTE_BOOT_SSH_CHECK_POLL_SECONDS:-10}"
   log_step "stage=mount_check dry_run_command=\"${mount_check_command}\" recovery_action=remount_nfs recovery_command=\"${mount_recovery_command}\""
   log_step "stage=host_gpu_check dry_run_command=\"${host_gpu_check_command}\" recovery_action=reload_gpu_modules recovery_command=\"${host_gpu_recovery_command}\""
-
-  if is_truthy "${MONITOR_MODE}"; then
-    log_step "stage=docker_daemon_check dry_run_command=\"${docker_daemon_check_command}\" recovery_action=none"
-    log_step "status=dry_run_completed mode=monitor"
-    return 0
-  fi
 
   log_step "stage=cleanup_stale_container container=${test_container_name}"
   bash "${DELETE_TEST_SCRIPT}" \
@@ -232,10 +222,6 @@ while [[ $# -gt 0 ]]; do
       fi
       LOG_FILE_OVERRIDE="$2"
       shift 2
-      ;;
-    --monitor-mode)
-      MONITOR_MODE=true
-      shift
       ;;
     --dry-run)
       DRY_RUN=true
@@ -376,17 +362,6 @@ run_step_with_single_recovery \
   "nvidia-smi" \
   "$(build_host_gpu_recovery_command)" \
   "reload_gpu_modules" || fail_with_notification "host_gpu_check" "host_gpu_unavailable"
-
-if is_truthy "${MONITOR_MODE}"; then
-  log_step "stage=docker_daemon_check"
-  if ! run_remote_shell "${target_host}" "docker info >/dev/null 2>&1"; then
-    fail_with_notification "docker_daemon_check" "docker_daemon_unavailable"
-  fi
-
-  reset_health_alert_state
-  log_step "status=passed mode=monitor"
-  exit 0
-fi
 
 log_step "stage=cleanup_stale_container container=${test_container_name}"
 cleanup_test_container
