@@ -16,7 +16,7 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $labels.server }} required mount is missing"
-          description: "source={{ $labels.source }} target={{ $labels.target }}"
+          description: "source={{ $labels.source }} target={{ $labels.target }} storage_host={{ $labels.storage_host }} storage_ping={{ $labels.storage_ping }} peer_ping={{ $labels.storage_peer_ping }} peer_up={{ $labels.storage_peer_up_hosts }} peer_down={{ $labels.storage_peer_down_hosts }} diagnosis={{ $labels.mount_diagnosis }} recovery_attempted={{ $labels.recovery_attempted }} recovery_success={{ $labels.recovery_success }}"
 
       - alert: ClusterMonitorHostGpuDown
         expr: cluster_monitor_host_gpu_up{job="cluster-monitor-exporter"} == 0

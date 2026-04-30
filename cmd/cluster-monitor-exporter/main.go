@@ -33,6 +33,8 @@ type Config struct {
 	DockerPath             string
 	NvidiaSmiPath          string
 	MountPath              string
+	PingPath               string
+	StoragePeerHosts       []string
 	MountRecoveryEnabled   bool
 	HostGPUCheckEnabled    bool
 	DockerCheckEnabled     bool
@@ -144,6 +146,8 @@ func loadConfig() (Config, error) {
 		DockerPath:             envStringCompat("CLUSTER_MONITOR_EXPORTER_DOCKER_PATH", "REMOTE_BOOT_EXPORTER_DOCKER_PATH", "docker"),
 		NvidiaSmiPath:          envStringCompat("CLUSTER_MONITOR_EXPORTER_NVIDIA_SMI_PATH", "REMOTE_BOOT_EXPORTER_NVIDIA_SMI_PATH", "nvidia-smi"),
 		MountPath:              envStringCompat("CLUSTER_MONITOR_EXPORTER_MOUNT_PATH", "REMOTE_BOOT_EXPORTER_MOUNT_PATH", "mount"),
+		PingPath:               envStringCompat("CLUSTER_MONITOR_EXPORTER_PING_PATH", "REMOTE_BOOT_EXPORTER_PING_PATH", "ping"),
+		StoragePeerHosts:       parseHostList(envStringCompat("CLUSTER_MONITOR_EXPORTER_STORAGE_PEER_HOSTS", "REMOTE_BOOT_EXPORTER_STORAGE_PEER_HOSTS", "")),
 		MountRecoveryEnabled:   envBoolCompat("CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED", "REMOTE_BOOT_EXPORTER_MOUNT_RECOVERY_ENABLED", true),
 		HostGPUCheckEnabled:    envBoolCompat("CLUSTER_MONITOR_EXPORTER_HOST_GPU_CHECK_ENABLED", "REMOTE_BOOT_EXPORTER_HOST_GPU_CHECK_ENABLED", true),
 		DockerCheckEnabled:     envBoolCompat("CLUSTER_MONITOR_EXPORTER_DOCKER_CHECK_ENABLED", "REMOTE_BOOT_EXPORTER_DOCKER_CHECK_ENABLED", true),
@@ -306,6 +310,25 @@ func parseRequiredMounts(raw string) []MountRequirement {
 	return requirements
 }
 
+func parseHostList(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == ';' || r == ' ' || r == '\t'
+	})
+
+	seen := make(map[string]bool, len(parts))
+	hosts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		host := strings.Trim(strings.TrimSpace(part), "[]")
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		hosts = append(hosts, host)
+	}
+
+	return hosts
+}
+
 func (c *Collector) run(ctx context.Context) {
 	c.collectOnce()
 
@@ -414,6 +437,12 @@ func (c *Collector) collectMounts(r *renderer) {
 		up := boolFloat(mountRequirementUp(req, mounts))
 		recoveryAttempted := false
 		recoverySuccess := false
+		storageHost := storageHostFromMountSource(req.Source)
+		storagePing := "skipped"
+		storagePeerPing := "skipped"
+		storagePeerUpHosts := ""
+		storagePeerDownHosts := ""
+		mountDiagnosis := "mounted"
 
 		if up == 0 && c.cfg.MountRecoveryEnabled && req.Target != "" {
 			recoveryAttempted = true
@@ -426,8 +455,35 @@ func (c *Collector) collectMounts(r *renderer) {
 			}
 		}
 
+		if up == 0 {
+			storagePing = c.storagePingState(storageHost)
+			if storagePing == "down" {
+				peerResult := c.storagePeerPingState(storageHost)
+				storagePeerPing = peerResult.State
+				storagePeerUpHosts = strings.Join(peerResult.UpHosts, ",")
+				storagePeerDownHosts = strings.Join(peerResult.DownHosts, ",")
+			}
+			mountDiagnosis = mountDiagnosisFor(storagePing, storagePeerPing, recoveryAttempted)
+		} else if recoverySuccess {
+			mountDiagnosis = "mount_recovered"
+		}
+
+		mountLabels := labels(
+			"server", c.cfg.ServerID,
+			"source", req.Source,
+			"target", req.Target,
+			"storage_host", storageHost,
+			"storage_ping", storagePing,
+			"storage_peer_ping", storagePeerPing,
+			"storage_peer_up_hosts", storagePeerUpHosts,
+			"storage_peer_down_hosts", storagePeerDownHosts,
+			"mount_diagnosis", mountDiagnosis,
+			"recovery_attempted", boolString(recoveryAttempted),
+			"recovery_success", boolString(recoverySuccess && up == 1),
+		)
+
 		r.emit("cluster_monitor_host_mount_up", "Whether a configured required mount is present.", "gauge",
-			labels("server", c.cfg.ServerID, "source", req.Source, "target", req.Target), up)
+			mountLabels, up)
 		r.emit("cluster_monitor_host_mount_recovery_attempted", "Whether the exporter attempted to mount a missing configured mount during the last collection.", "gauge",
 			labels("server", c.cfg.ServerID, "source", req.Source, "target", req.Target), boolFloat(recoveryAttempted))
 		r.emit("cluster_monitor_host_mount_recovery_success", "Whether the exporter successfully mounted a missing configured mount during the last collection.", "gauge",
@@ -447,6 +503,115 @@ func mountRequirementUp(req MountRequirement, mounts []MountEntry) bool {
 		}
 	}
 	return false
+}
+
+type StoragePeerPingResult struct {
+	State     string
+	UpHosts   []string
+	DownHosts []string
+}
+
+func storageHostFromMountSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return ""
+	}
+
+	if strings.HasPrefix(source, "//") {
+		withoutPrefix := strings.TrimPrefix(source, "//")
+		if host, _, ok := strings.Cut(withoutPrefix, "/"); ok {
+			return strings.Trim(host, "[]")
+		}
+		return strings.Trim(withoutPrefix, "[]")
+	}
+
+	if strings.HasPrefix(source, "[") {
+		if end := strings.Index(source, "]"); end > 1 {
+			return source[1:end]
+		}
+	}
+
+	if host, _, ok := strings.Cut(source, ":"); ok {
+		return strings.Trim(host, "[]")
+	}
+
+	if host, _, ok := strings.Cut(source, "/"); ok {
+		return strings.Trim(host, "[]")
+	}
+
+	return strings.Trim(source, "[]")
+}
+
+func (c *Collector) storagePingState(storageHost string) string {
+	if storageHost == "" {
+		return "unknown"
+	}
+
+	if !c.pingHost(storageHost) {
+		return "down"
+	}
+
+	return "up"
+}
+
+func (c *Collector) storagePeerPingState(storageHost string) StoragePeerPingResult {
+	result := StoragePeerPingResult{State: "not_configured"}
+	for _, peerHost := range c.cfg.StoragePeerHosts {
+		if peerHost == "" || peerHost == storageHost {
+			continue
+		}
+		if c.pingHost(peerHost) {
+			result.UpHosts = append(result.UpHosts, peerHost)
+		} else {
+			result.DownHosts = append(result.DownHosts, peerHost)
+		}
+	}
+
+	switch {
+	case len(result.UpHosts) > 0 && len(result.DownHosts) > 0:
+		result.State = "partial"
+	case len(result.UpHosts) > 0:
+		result.State = "up"
+	case len(result.DownHosts) > 0:
+		result.State = "down"
+	}
+
+	return result
+}
+
+func (c *Collector) pingHost(host string) bool {
+	output, err := runCommand(c.cfg.CommandTimeout, c.cfg.PingPath, "-c", "1", "-W", "2", host)
+	if err != nil {
+		log.Printf("server=%s ping=down host=%q error=%v output=%q",
+			c.cfg.ServerID, host, err, truncateForLog(output, 300))
+		return false
+	}
+	return true
+}
+
+func mountDiagnosisFor(storagePing, storagePeerPing string, recoveryAttempted bool) string {
+	prefix := "mount_missing"
+	if recoveryAttempted {
+		prefix = "mount_recovery_failed"
+	}
+
+	switch storagePing {
+	case "up":
+		return prefix + "_storage_ping_up"
+	case "down":
+		switch storagePeerPing {
+		case "up":
+			return prefix + "_storage_ping_down_peer_ping_up"
+		case "partial":
+			return prefix + "_storage_ping_down_peer_ping_partial"
+		case "down":
+			return prefix + "_storage_ping_down_peer_ping_down"
+		default:
+			return prefix + "_storage_ping_down_peer_ping_unknown"
+		}
+	default:
+		return prefix + "_storage_ping_unknown"
+	}
 }
 
 func (c *Collector) recoverMount(req MountRequirement) bool {
@@ -972,6 +1137,13 @@ func boolFloat(value bool) float64 {
 		return 1
 	}
 	return 0
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func escapeLabelValue(value string) string {

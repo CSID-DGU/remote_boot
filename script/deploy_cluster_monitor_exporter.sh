@@ -229,6 +229,36 @@ build_with_remote_go() {
   log_event "EXPORTER" "action=remote_build_complete builder=${builder_server} binary=${BUILD_BINARY}"
 }
 
+storage_peer_hosts_for_server() {
+  local domain_name="$1"
+  local current_number="$2"
+  local targets=()
+  local target target_domain target_number peer_number peer_hosts=()
+
+  case "${domain_name}" in
+    FARM)
+      targets=("${FARM_TARGETS[@]}")
+      ;;
+    LAB)
+      targets=("${LAB_TARGETS[@]}")
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  for target in "${targets[@]}"; do
+    read target_domain target_number <<<"$(split_server_id "${target}")" || return 1
+    if [[ "${target_domain}" != "${domain_name}" || "${target_number}" == "${current_number}" ]]; then
+      continue
+    fi
+    peer_number=$((100 + 10#${target_number}))
+    peer_hosts+=("100.100.100.${peer_number}")
+  done
+
+  printf '%s\n' "${peer_hosts[*]}"
+}
+
 if [[ "${SKIP_BUILD}" == "false" ]]; then
   if find_local_go >/dev/null 2>&1; then
     build_with_local_go
@@ -266,13 +296,14 @@ EOF
 
 deploy_target() {
   local server_id="$1"
-  local domain_name server_number host_alias host_mount_path required_mount
+  local domain_name server_number host_alias host_mount_path required_mount storage_peer_hosts
   local env_file remote_tmp_binary remote_tmp_env remote_tmp_unit verify_command
 
   read domain_name server_number <<<"$(split_server_id "${server_id}")" || return 1
   server_number="$(validate_server_number "${server_number}")" || return 1
   host_alias="$(compose_ansible_host_alias "${domain_name}" "${server_number}")"
   host_mount_path="$(render_server_template "${REMOTE_BOOT_HOST_SHARE_MOUNT_TEMPLATE}" "${server_number}")"
+  storage_peer_hosts="$(storage_peer_hosts_for_server "${domain_name}" "${server_number}")"
   ensure_ansible_host_exists "${host_alias}" || return 1
 
   case "${domain_name}" in
@@ -301,6 +332,7 @@ CLUSTER_MONITOR_EXPORTER_COMMAND_TIMEOUT="${CLUSTER_MONITOR_EXPORTER_COMMAND_TIM
 CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_TIMEOUT="${CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_TIMEOUT}"
 CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_POLL="${CLUSTER_MONITOR_EXPORTER_CONTAINER_CHECK_POLL}"
 CLUSTER_MONITOR_EXPORTER_REQUIRED_MOUNTS="${required_mount}=${host_mount_path}"
+CLUSTER_MONITOR_EXPORTER_STORAGE_PEER_HOSTS="${storage_peer_hosts}"
 CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED="${CLUSTER_MONITOR_EXPORTER_MOUNT_RECOVERY_ENABLED}"
 CLUSTER_MONITOR_EXPORTER_HOST_GPU_CHECK_ENABLED=true
 CLUSTER_MONITOR_EXPORTER_DOCKER_CHECK_ENABLED=true
@@ -312,6 +344,7 @@ CLUSTER_MONITOR_EXPORTER_CONTAINER_IMAGE_REGEX="${CLUSTER_MONITOR_EXPORTER_CONTA
 CLUSTER_MONITOR_EXPORTER_DOCKER_PATH="docker"
 CLUSTER_MONITOR_EXPORTER_NVIDIA_SMI_PATH="nvidia-smi"
 CLUSTER_MONITOR_EXPORTER_MOUNT_PATH="mount"
+CLUSTER_MONITOR_EXPORTER_PING_PATH="ping"
 EOF
 
   log_event "EXPORTER" "server=${server_id} host=${host_alias} action=copy"
